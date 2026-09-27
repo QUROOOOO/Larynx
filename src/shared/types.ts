@@ -50,7 +50,9 @@ export type ContentMessage =
   | { type: 'SELECTION'; payload: { text: string; rect: DOMRect } }
   | { type: 'PILL_ACTION'; payload: PillAction }
   | { type: 'SETTINGS_CHANGED'; payload: Partial<TTSSettings> }
-  | { type: 'SENTENCE_PROGRESS'; payload: SentenceProgressPayload };
+  | { type: 'SENTENCE_PROGRESS'; payload: SentenceProgressPayload }
+  | { type: 'PILL_STATE'; payload: { isPlaying?: boolean; rate?: number } }
+  | { type: 'HIDE_PILL' };
 
 export type PillAction =
   | { action: 'play_pause' }

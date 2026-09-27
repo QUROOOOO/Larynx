@@ -127,7 +127,7 @@ chrome.runtime.onMessage.addListener((message: OffscreenMessage, _sender, sendRe
             isPaused = false;
             await processQueue();
           }
-          sendResponse({ success: true });
+          sendResponse({ success: true, paused: isPaused });
           break;
         }
 

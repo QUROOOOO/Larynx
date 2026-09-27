@@ -1,8 +1,9 @@
 // Background Service Worker — Event-driven, no persistent loops
 // Wakes only on: chrome.commands, messages from content/offscreen/options
 
-import { createOffscreenDocument, closeOffscreenDocument, sendToOffscreen, sendToContentScript } from '../shared/messaging';
-import { getSettings, onSettingsChange } from '../shared/storage';
+import { createOffscreenDocument, closeOffscreenDocument, sendToOffscreen, sendToContentScript, hasOffscreenDocument } from '../shared/messaging';
+import { getSettings, setSettings, onSettingsChange } from '../shared/storage';
+import { ContentMessage } from '../shared/types';
 
 let currentTabId: number | null = null;
 let offscreenIdleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -14,6 +15,15 @@ function resetOffscreenIdleTimer() {
     closeOffscreenDocument();
     offscreenIdleTimer = null;
   }, OFFSCREEN_IDLE_MS);
+}
+
+async function notifyContent(message: ContentMessage): Promise<void> {
+  if (currentTabId === null) return;
+  try {
+    await sendToContentScript(currentTabId, message);
+  } catch {
+    // Content script not injected in this tab (or page navigated away)
+  }
 }
 
 chrome.commands.onCommand.addListener(async (command) => {
@@ -53,51 +63,63 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           payload: { text, settings, selectionRect: rect },
         });
 
+        await notifyContent({ type: 'PILL_STATE', payload: { rate: settings.rate, isPlaying: true } });
         sendResponse({ success: true, result });
       } else if (message.type === 'PILL_ACTION') {
         const action = message.payload.action;
-        let offscreenMsg: any = null;
 
-        switch (action) {
-          case 'play_pause':
-            offscreenMsg = { type: 'PAUSE' };
-            break;
-          case 'speed_up':
-            offscreenMsg = { type: 'SET_RATE', payload: Math.min(2.0, (await getSettings()).rate + 0.25) };
-            break;
-          case 'speed_down':
-            offscreenMsg = { type: 'SET_RATE', payload: Math.max(0.5, (await getSettings()).rate - 0.25) };
-            break;
-          case 'next_voice':
-            offscreenMsg = { type: 'GET_VOICES' };
-            break;
-          case 'dismiss':
-            await sendToOffscreen({ type: 'STOP' });
-            closeOffscreenDocument();
-            if (offscreenIdleTimer) clearTimeout(offscreenIdleTimer);
-            break;
+        if (action === 'play_pause') {
+          const resp = (await sendToOffscreen({ type: 'PAUSE' })) as { paused?: boolean };
+          if (typeof resp?.paused === 'boolean') {
+            await notifyContent({ type: 'PILL_STATE', payload: { isPlaying: !resp.paused } });
+          }
+        } else if (action === 'speed_up' || action === 'speed_down') {
+          const current = await getSettings();
+          const delta = action === 'speed_up' ? 0.25 : -0.25;
+          const newRate = Math.min(2.0, Math.max(0.5, Math.round((current.rate + delta) * 100) / 100));
+          await setSettings({ rate: newRate });
+          await sendToOffscreen({ type: 'SET_RATE', payload: newRate });
+          await notifyContent({ type: 'PILL_STATE', payload: { rate: newRate } });
+        } else if (action === 'next_voice') {
+          await sendToOffscreen({ type: 'GET_VOICES' });
+        } else if (action === 'dismiss') {
+          await sendToOffscreen({ type: 'STOP' });
+          await closeOffscreenDocument();
+          if (offscreenIdleTimer) {
+            clearTimeout(offscreenIdleTimer);
+            offscreenIdleTimer = null;
+          }
+          await notifyContent({ type: 'HIDE_PILL' });
         }
 
-        if (offscreenMsg) {
-          await sendToOffscreen(offscreenMsg);
-        }
         sendResponse({ success: true });
       } else if (message.type === 'SETTINGS_CHANGED') {
         await getSettings();
         sendResponse({ success: true });
       } else if (message.type === 'SENTENCE_START') {
-        // Handle sentence progress from offscreen document
         // Offscreen sends: { index: number, text: string }
-        if (message.payload.index !== undefined && currentTabId) {
-          sendToContentScript(currentTabId, {
+        if (message.payload?.index !== undefined && currentTabId !== null) {
+          await notifyContent({
             type: 'SENTENCE_PROGRESS',
             payload: { sentenceIndex: message.payload.index, sentenceText: message.payload.text },
           });
         }
         sendResponse({ success: true });
+      } else if (message.type === 'SPEAKING_STARTED') {
+        await notifyContent({ type: 'PILL_STATE', payload: { isPlaying: true } });
+        sendResponse({ success: true });
       } else if (message.type === 'SPEAKING_ENDED') {
-        // Speech finished - reset idle timer to close offscreen doc soon
+        // Speech finished — reset idle timer to close offscreen doc soon
         resetOffscreenIdleTimer();
+        await notifyContent({ type: 'PILL_STATE', payload: { isPlaying: false } });
+        sendResponse({ success: true });
+      } else if (message.type === 'ERROR') {
+        console.error('[Larynx] Speech error:', message.payload);
+        resetOffscreenIdleTimer();
+        await notifyContent({ type: 'PILL_STATE', payload: { isPlaying: false } });
+        sendResponse({ success: false, error: String(message.payload) });
+      } else {
+        // Always respond so senders never hit "message port closed"
         sendResponse({ success: true });
       }
     } catch (error) {
@@ -108,15 +130,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return true;
 });
 
-// Listen for storage changes from options page
-onSettingsChange((newSettings) => {
-  // Notify offscreen document of settings change if it exists
-  createOffscreenDocument().then(() => {
-    sendToOffscreen({ type: 'SET_RATE', payload: newSettings.rate });
+// Sync offscreen state when settings change (options page, pill speed buttons)
+onSettingsChange(async (newSettings) => {
+  try {
+    if (!(await hasOffscreenDocument())) return;
+    await sendToOffscreen({ type: 'SET_RATE', payload: newSettings.rate });
     if (newSettings.voice) {
-      sendToOffscreen({ type: 'SET_VOICE', payload: newSettings.voice });
+      await sendToOffscreen({ type: 'SET_VOICE', payload: newSettings.voice });
     }
-  });
+  } catch {
+    // Offscreen document closed between check and send
+  }
 });
 
 console.log('[Larynx] Background service worker loaded');
