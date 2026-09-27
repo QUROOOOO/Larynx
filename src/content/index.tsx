@@ -1,12 +1,36 @@
 // Content Script — Injected on-demand via activeTab + chrome.scripting.executeScript
-// No persistent listeners, no selectionchange polling
+// Bundled as a self-contained IIFE (classic script, no ES module imports).
+// Safe to inject multiple times: persistent state lives on window, setup runs once.
 
 import { createPillAction } from '../shared/messaging';
+import type { PillAction } from '../shared/types';
+import { PillUI } from '../pill/PillUI';
+import { createRoot, type Root } from 'react-dom/client';
+import pillCss from '../pill/pill.css?inline';
 
-let pillMounted = false;
-let pillRoot: HTMLElement | null = null;
-let pillComponent: any = null;
-let PillUIComponent: any = null;
+interface PillProps {
+  currentSentence?: string;
+  sentenceIndex?: number;
+  isPlaying: boolean;
+  rate: number;
+}
+
+interface LarynxContentState {
+  root: Root | null;
+  host: HTMLElement | null;
+  lastRect: DOMRect | null;
+  pillProps: PillProps;
+  run: () => void;
+  render: () => void;
+  cleanup: () => void;
+}
+
+declare global {
+  interface Window {
+    __larynx?: LarynxContentState;
+    larynxCleanup?: () => void;
+  }
+}
 
 function getSelectionData(): { text: string; rect: DOMRect } | null {
   const selection = window.getSelection();
@@ -16,89 +40,123 @@ function getSelectionData(): { text: string; rect: DOMRect } | null {
   const text = range.toString().trim();
   if (!text) return null;
 
-  const rect = range.getBoundingClientRect();
-  return { text, rect };
+  return { text, rect: range.getBoundingClientRect() };
 }
 
-function sendSelectionToBackground(data: { text: string; rect: DOMRect }) {
+const EMPTY_RECT = {
+  left: 0, top: 0, width: 0, height: 0,
+  bottom: 0, right: 0, x: 0, y: 0,
+} as unknown as DOMRect;
+
+function sendSelection(data: { text: string; rect: DOMRect }) {
   chrome.runtime.sendMessage({ type: 'SELECTION', payload: data });
 }
 
-async function loadPillUI() {
-  if (PillUIComponent) return PillUIComponent;
-  const mod = await import('../pill/PillUI');
-  PillUIComponent = mod.PillUI;
-  return PillUIComponent;
-}
+if (!window.__larynx) {
+  const state: LarynxContentState = {
+    root: null,
+    host: null,
+    lastRect: null,
+    pillProps: { isPlaying: false, rate: 1.0 },
+    run: () => {},
+    render: () => {},
+    cleanup: () => {},
+  };
+  window.__larynx = state;
 
-async function mountPill(rect: DOMRect) {
-  if (pillMounted) return;
+  const handleAction = (action: string) => {
+    chrome.runtime.sendMessage(createPillAction(action as PillAction['action']));
+  };
 
-  pillRoot = document.createElement('div');
-  pillRoot.id = 'larynx-pill-root';
-  pillRoot.style.cssText = `
-    position: fixed;
-    left: ${rect.left + rect.width / 2}px;
-    top: ${rect.bottom + 8}px;
-    z-index: 2147483647;
-    pointer-events: none;
-  `;
-  document.body.appendChild(pillRoot);
+  state.render = () => {
+    if (!state.root || !state.lastRect) return;
+    state.root.render(
+      <PillUI
+        initialRect={state.lastRect}
+        onAction={handleAction}
+        currentSentence={state.pillProps.currentSentence}
+        sentenceIndex={state.pillProps.sentenceIndex}
+        isPlaying={state.pillProps.isPlaying}
+        rate={state.pillProps.rate}
+      />
+    );
+  };
 
-  const PillUI = await loadPillUI();
-  const { createRoot } = await import('react-dom/client');
-  const React = await import('react');
-  
-  const root = createRoot(pillRoot!);
-  root.render(React.createElement(PillUI, { initialRect: rect, onAction: handlePillAction }));
-  pillComponent = root;
-  pillMounted = true;
-}
+  const ensurePill = (rect: DOMRect) => {
+    state.lastRect = rect;
+    if (state.root) {
+      state.render();
+      return;
+    }
 
-function handlePillAction(action: string) {
-  chrome.runtime.sendMessage(createPillAction(action as any));
-}
+    const host = document.createElement('div');
+    host.id = 'larynx-pill-root';
+    host.style.cssText =
+      'position:fixed;left:0;top:0;z-index:2147483647;pointer-events:none;';
+    const shadow = host.attachShadow({ mode: 'open' });
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message.type === 'SENTENCE_PROGRESS') {
-    // Use Promise to handle async rendering
-    (async () => {
-      if (message.payload.sentenceIndex !== undefined && pillComponent) {
-        const PillUI = await loadPillUI();
-        const React = await import('react');
-        pillComponent.render(
-          React.createElement(PillUI, { 
-            initialRect: { left: 0, top: 0, width: 0, height: 0, bottom: 0, right: 0, x: 0, y: 0 },
-            onAction: handlePillAction,
-            currentSentence: message.payload.sentenceText,
-            sentenceIndex: message.payload.sentenceIndex
-          })
-        );
-      }
-    })();
-  }
-  sendResponse({ success: true });
-  return true;
-});
+    const style = document.createElement('style');
+    style.textContent = pillCss;
+    shadow.appendChild(style);
 
-const selectionData = getSelectionData();
-if (selectionData) {
-  sendSelectionToBackground(selectionData);
-  mountPill(selectionData.rect);
+    const mountPoint = document.createElement('div');
+    shadow.appendChild(mountPoint);
+    (document.body || document.documentElement).appendChild(host);
+
+    state.host = host;
+    state.root = createRoot(mountPoint);
+    state.render();
+  };
+
+  state.cleanup = () => {
+    if (state.root) {
+      state.root.unmount();
+      state.root = null;
+    }
+    if (state.host) {
+      state.host.remove();
+      state.host = null;
+    }
+    state.lastRect = null;
+    state.pillProps = { isPlaying: false, rate: 1.0 };
+  };
+
+  state.run = () => {
+    const data = getSelectionData();
+    if (data) {
+      sendSelection(data);
+      ensurePill(data.rect);
+    } else {
+      sendSelection({ text: '', rect: EMPTY_RECT });
+    }
+  };
+
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message.type === 'SENTENCE_PROGRESS') {
+      state.pillProps.currentSentence = message.payload.sentenceText;
+      state.pillProps.sentenceIndex = message.payload.sentenceIndex;
+      state.pillProps.isPlaying = true;
+      state.render();
+      sendResponse({ success: true });
+      return false;
+    }
+    if (message.type === 'PILL_STATE') {
+      Object.assign(state.pillProps, message.payload);
+      state.render();
+      sendResponse({ success: true });
+      return false;
+    }
+    if (message.type === 'HIDE_PILL') {
+      state.cleanup();
+      sendResponse({ success: true });
+      return false;
+    }
+    return undefined;
+  });
+
+  window.larynxCleanup = state.cleanup;
+  state.run();
 } else {
-  chrome.runtime.sendMessage({ type: 'SELECTION', payload: { text: '', rect: { left: 0, top: 0, width: 0, height: 0, bottom: 0, right: 0, x: 0, y: 0 } } });
+  // Re-injection: state + listener already exist, just re-run selection logic
+  window.__larynx.run();
 }
-
-export function cleanup() {
-  if (pillComponent) {
-    pillComponent.unmount();
-    pillComponent = null;
-  }
-  if (pillRoot) {
-    pillRoot.remove();
-    pillRoot = null;
-  }
-  pillMounted = false;
-}
-
-(window as any).larynxCleanup = cleanup;

@@ -1,11 +1,13 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
 import { resolve } from 'path';
 import { viteStaticCopy } from 'vite-plugin-static-copy';
 
 export default defineConfig({
   plugins: [
     react(),
+    tailwindcss(),
     viteStaticCopy({
       targets: [
         { src: 'public/manifest.json', dest: '' },
@@ -21,8 +23,6 @@ export default defineConfig({
     rollupOptions: {
       input: {
         background: resolve(__dirname, 'src/background/index.ts'),
-        content: resolve(__dirname, 'src/content/index.tsx'),
-        pill: resolve(__dirname, 'src/pill/index.tsx'),
         options: resolve(__dirname, 'src/options/index.tsx'),
         offscreen: resolve(__dirname, 'src/offscreen/offscreen.ts'),
       },
