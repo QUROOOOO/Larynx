@@ -3,8 +3,8 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  Play, Pause, FastForward, SkipBack, 
-  Mic, MicOff, X, Volume2, 
+  Play, Pause, FastForward, 
+  Mic, X, 
   ChevronUp, ChevronDown 
 } from 'lucide-react';
 
@@ -63,15 +63,6 @@ export const PillUI: React.FC<PillUIProps> = ({
     setShowSpeed(false);
     setShowVoices(false);
   };
-
-  const cycleVoice = () => {
-    if (voices.length === 0) return;
-    const currentIndex = voices.findIndex(v => v.voiceURI === currentVoiceURI);
-    const nextIndex = (currentIndex + 1) % voices.length;
-    onAction('next_voice');
-  };
-
-  const currentVoice = voices.find(v => v.voiceURI === currentVoiceURI);
 
   return (
     <div
@@ -141,7 +132,7 @@ export const PillUI: React.FC<PillUIProps> = ({
           </button>
           {showVoices && voices.length > 0 && (
             <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg animate-spring-in max-h-60 overflow-y-auto">
-              {voices.map((voice, idx) => (
+              {voices.map((voice) => (
                 <button
                   key={voice.voiceURI}
                   onClick={() => {

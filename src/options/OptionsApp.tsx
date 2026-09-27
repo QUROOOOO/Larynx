@@ -5,11 +5,10 @@ import { createRoot } from 'react-dom/client';
 import { 
   Mic, MicOff, ChevronDown, ChevronUp, 
   ExternalLink, Settings, Volume2,
-  Check, X
+  Check
 } from 'lucide-react';
 import { getSettings, setSettings, onSettingsChange, TTSSettings } from '../shared/storage';
-import { DEFAULT_SETTINGS } from '../shared/types';
-import { VoiceInfo } from '../shared/types';
+import { VoiceInfo, DEFAULT_SETTINGS } from '../shared/types';
 
 const ACCENT_COLOR = '#00FF87';
 
@@ -98,7 +97,7 @@ const SpeedSlider: React.FC<{
 
 export const OptionsApp: React.FC = () => {
   const [settings, setSettingsState] = useState<TTSSettings>(DEFAULT_SETTINGS);
-  const [voices, setVoices] = useState<VoiceInfo[]>([]);
+  const [voices] = useState<VoiceInfo[]>([]);
   const [loadingVoices, setLoadingVoices] = useState(true);
 
   useEffect(() => {

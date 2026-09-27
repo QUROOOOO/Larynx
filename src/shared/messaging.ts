@@ -2,6 +2,7 @@
 
 import { OffscreenMessage, OffscreenResponse, ContentMessage, PillAction } from './types';
 
+// Send message to offscreen document
 export function sendToOffscreen(message: OffscreenMessage): Promise<OffscreenResponse> {
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage(message, (response) => {
@@ -14,6 +15,7 @@ export function sendToOffscreen(message: OffscreenMessage): Promise<OffscreenRes
   });
 }
 
+// Send message to content script in a specific tab
 export function sendToContentScript(tabId: number, message: ContentMessage): Promise<any> {
   return new Promise((resolve, reject) => {
     chrome.tabs.sendMessage(tabId, message, (response) => {
@@ -30,25 +32,29 @@ export function createPillAction(action: PillAction['action']): ContentMessage {
   return { type: 'PILL_ACTION', payload: { action } };
 }
 
+// Check if offscreen document exists
 export async function hasOffscreenDocument(): Promise<boolean> {
   if (!chrome.offscreen) return false;
   try {
-    const contexts = await chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'] });
-    return contexts.length > 0;
+    
+    const contexts = await chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT' as any] });
+    return Array.isArray(contexts) && contexts.length > 0;
   } catch {
     return false;
   }
 }
 
+// Create offscreen document
 export async function createOffscreenDocument(): Promise<void> {
   if (await hasOffscreenDocument()) return;
   await chrome.offscreen.createDocument({
     url: 'offscreen/index.html',
-    reasons: ['AUDIO_PLAYBACK'],
+    reasons: ['AUDIO_PLAYBACK' as chrome.offscreen.Reason],
     justification: 'Play TTS audio via Web Speech API',
   });
 }
 
+// Close offscreen document
 export async function closeOffscreenDocument(): Promise<void> {
   if (!chrome.offscreen) return;
   try {

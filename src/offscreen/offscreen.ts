@@ -6,8 +6,7 @@ import {
   OffscreenMessage, 
   OffscreenResponse, 
   VoiceInfo, 
-  TTSSettings,
-  SpeakRequest 
+  TTSSettings
 } from '../shared/types';
 
 let currentUtterance: SpeechSynthesisUtterance | null = null;
@@ -15,7 +14,6 @@ let sentenceQueue: string[] = [];
 let currentSentenceIndex = 0;
 let currentSettings: TTSSettings = { voice: '', rate: 1.0, pauseOnPunctuation: true };
 let isPaused = false;
-let isSpeaking = false;
 
 function getVoices(): VoiceInfo[] {
   if (!window.speechSynthesis) return [];
@@ -54,18 +52,15 @@ function speakSentence(text: string, settings: TTSSettings): Promise<void> {
     utterance.volume = 1.0;
 
     utterance.onstart = () => {
-      isSpeaking = true;
       chrome.runtime.sendMessage({ type: 'SPEAKING_STARTED' } as OffscreenResponse);
     };
 
     utterance.onend = () => {
-      isSpeaking = false;
       currentUtterance = null;
       resolve();
     };
 
     utterance.onerror = (e) => {
-      isSpeaking = false;
       currentUtterance = null;
       reject(new Error(e.error));
     };
@@ -101,7 +96,7 @@ async function processQueue() {
   }
 }
 
-chrome.runtime.onMessage.addListener((message: OffscreenMessage, sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message: OffscreenMessage, _sender, sendResponse) => {
   (async () => {
     try {
       switch (message.type) {
@@ -149,7 +144,6 @@ chrome.runtime.onMessage.addListener((message: OffscreenMessage, sender, sendRes
         case 'STOP': {
           window.speechSynthesis.cancel();
           sentenceQueue = [];
-          isSpeaking = false;
           isPaused = false;
           currentUtterance = null;
           sendResponse({ success: true });

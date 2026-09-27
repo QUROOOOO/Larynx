@@ -45,3 +45,6 @@ export function onSettingsChange(callback: (settings: TTSSettings) => void): () 
   chrome.storage.onChanged.addListener(listener);
   return () => chrome.storage.onChanged.removeListener(listener);
 }
+
+// Re-export for convenience
+export type { TTSSettings, DEFAULT_SETTINGS } from './types';

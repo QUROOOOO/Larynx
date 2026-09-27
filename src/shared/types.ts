@@ -41,10 +41,16 @@ export type OffscreenResponse =
   | { type: 'SPEAKING_ENDED' }
   | { type: 'ERROR'; payload: string };
 
+export type SentenceProgressPayload = {
+  sentenceIndex: number;
+  sentenceText: string;
+};
+
 export type ContentMessage =
   | { type: 'SELECTION'; payload: { text: string; rect: DOMRect } }
   | { type: 'PILL_ACTION'; payload: PillAction }
-  | { type: 'SETTINGS_CHANGED'; payload: Partial<TTSSettings> };
+  | { type: 'SETTINGS_CHANGED'; payload: Partial<TTSSettings> }
+  | { type: 'SENTENCE_PROGRESS'; payload: SentenceProgressPayload };
 
 export type PillAction =
   | { action: 'play_pause' }

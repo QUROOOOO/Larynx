@@ -6,6 +6,7 @@ import { createPillAction } from '../shared/messaging';
 let pillMounted = false;
 let pillRoot: HTMLElement | null = null;
 let pillComponent: any = null;
+let PillUIComponent: any = null;
 
 function getSelectionData(): { text: string; rect: DOMRect } | null {
   const selection = window.getSelection();
@@ -23,7 +24,14 @@ function sendSelectionToBackground(data: { text: string; rect: DOMRect }) {
   chrome.runtime.sendMessage({ type: 'SELECTION', payload: data });
 }
 
-function mountPill(rect: DOMRect) {
+async function loadPillUI() {
+  if (PillUIComponent) return PillUIComponent;
+  const mod = await import('../pill/PillUI');
+  PillUIComponent = mod.PillUI;
+  return PillUIComponent;
+}
+
+async function mountPill(rect: DOMRect) {
   if (pillMounted) return;
 
   pillRoot = document.createElement('div');
@@ -37,38 +45,40 @@ function mountPill(rect: DOMRect) {
   `;
   document.body.appendChild(pillRoot);
 
-  // Dynamic import to avoid bundling React in content script
-  import('../pill/PillUI').then(({ PillUI }) => {
-    import('react-dom/client').then(({ createRoot }) => {
-      const root = createRoot(pillRoot!);
-      // Use React.createElement instead of JSX since this is a .ts file
-      const React = require('react');
-      root.render(React.createElement(PillUI, { initialRect: rect, onAction: handlePillAction }));
-      pillComponent = root;
-      pillMounted = true;
-    });
-  });
+  const PillUI = await loadPillUI();
+  const { createRoot } = await import('react-dom/client');
+  const React = await import('react');
+  
+  const root = createRoot(pillRoot!);
+  root.render(React.createElement(PillUI, { initialRect: rect, onAction: handlePillAction }));
+  pillComponent = root;
+  pillMounted = true;
 }
 
 function handlePillAction(action: string) {
   chrome.runtime.sendMessage(createPillAction(action as any));
 }
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type === 'SETTINGS_CHANGED') {
-    if (message.payload.sentenceIndex !== undefined && pillComponent) {
-      const React = require('react');
-      pillComponent.render(
-        React.createElement(PillUI, { 
-          initialRect: { left: 0, top: 0, width: 0, height: 0, bottom: 0, right: 0, x: 0, y: 0 },
-          onAction: handlePillAction,
-          currentSentence: message.payload.sentenceText,
-          sentenceIndex: message.payload.sentenceIndex
-        })
-      );
-    }
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message.type === 'SENTENCE_PROGRESS') {
+    // Use Promise to handle async rendering
+    (async () => {
+      if (message.payload.sentenceIndex !== undefined && pillComponent) {
+        const PillUI = await loadPillUI();
+        const React = await import('react');
+        pillComponent.render(
+          React.createElement(PillUI, { 
+            initialRect: { left: 0, top: 0, width: 0, height: 0, bottom: 0, right: 0, x: 0, y: 0 },
+            onAction: handlePillAction,
+            currentSentence: message.payload.sentenceText,
+            sentenceIndex: message.payload.sentenceIndex
+          })
+        );
+      }
+    })();
   }
   sendResponse({ success: true });
+  return true;
 });
 
 const selectionData = getSelectionData();

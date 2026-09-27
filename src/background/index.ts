@@ -3,7 +3,6 @@
 
 import { createOffscreenDocument, closeOffscreenDocument, sendToOffscreen, sendToContentScript } from '../shared/messaging';
 import { getSettings, onSettingsChange } from '../shared/storage';
-import { DEFAULT_SETTINGS } from '../shared/types';
 
 let currentTabId: number | null = null;
 let offscreenIdleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -35,7 +34,7 @@ chrome.commands.onCommand.addListener(async (command) => {
   }
 });
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   (async () => {
     try {
       if (message.type === 'SELECTION') {
@@ -95,20 +94,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
-chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => {
+// Handle messages from offscreen document (speech events)
+chrome.runtime.onMessageExternal.addListener((message, sender, _sendResponse) => {
+  // Only accept messages from our own offscreen document
   if (sender.id !== chrome.runtime.id) return;
 
   if (message.type === 'SPEAKING_ENDED') {
+    // Speech finished - reset idle timer to close offscreen doc soon
     resetOffscreenIdleTimer();
   } else if (message.type === 'SENTENCE_START' && currentTabId) {
+    // Forward sentence progress to content script for pill UI
     sendToContentScript(currentTabId, {
-      type: 'SETTINGS_CHANGED',
+      type: 'SENTENCE_PROGRESS',
       payload: { sentenceIndex: message.payload.index, sentenceText: message.payload.text },
     });
   }
 });
 
+// Listen for storage changes from options page
 onSettingsChange((newSettings) => {
+  // Notify offscreen document of settings change if it exists
   createOffscreenDocument().then(() => {
     sendToOffscreen({ type: 'SET_RATE', payload: newSettings.rate });
     if (newSettings.voice) {
@@ -117,6 +122,7 @@ onSettingsChange((newSettings) => {
   });
 });
 
+// Cleanup on extension unload
 chrome.runtime.onSuspend.addListener(() => {
   if (offscreenIdleTimer) clearTimeout(offscreenIdleTimer);
   closeOffscreenDocument();
