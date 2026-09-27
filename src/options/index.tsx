@@ -1,4 +1,5 @@
 // Options page entry point
+import '../styles/globals.css';
 import { mountOptionsApp } from './OptionsApp';
 
 if (document.readyState === 'loading') {
