@@ -4,6 +4,7 @@ export interface TTSSettings {
   voice: string; // voice URI
   rate: number; // 0.5 - 2.0
   pauseOnPunctuation: boolean;
+  sentenceGap: number; // milliseconds pause between sentences (default 300)
 }
 
 export interface VoiceInfo {
@@ -11,7 +12,7 @@ export interface VoiceInfo {
   lang: string;
   voiceURI: string;
   localService: boolean;
-  isNatural: boolean; // heuristic: Neural/Enhanced/Premium/Google/Microsoft/Apple
+  isNatural: boolean;
 }
 
 export interface SpeakRequest {
@@ -34,32 +35,22 @@ export type OffscreenMessage =
   | { type: 'SET_VOICE'; payload: string }
   | { type: 'GET_VOICES' };
 
+export type WordProgressPayload = { wordIndex: number; sentenceIndex: number; wordText: string };
+export type SentenceProgressPayload = { sentenceIndex: number; sentenceText: string };
+
 export type OffscreenResponse =
   | { type: 'VOICES_LIST'; payload: VoiceInfo[] }
-  | { type: 'SPEAKING_STARTED' }
+  | { type: 'SPEAKING_STARTED'; payload: { sentenceIndex: number } }
+  | { type: 'WORD_PROGRESS'; payload: WordProgressPayload }
   | { type: 'SENTENCE_START'; payload: { index: number; text: string } }
   | { type: 'SPEAKING_ENDED' }
   | { type: 'ERROR'; payload: string };
 
-export type SentenceProgressPayload = {
-  sentenceIndex: number;
-  sentenceText: string;
-};
-
 export type ContentMessage =
   | { type: 'SELECTION'; payload: { text: string; rect: DOMRect } }
-  | { type: 'PILL_ACTION'; payload: PillAction }
-  | { type: 'SETTINGS_CHANGED'; payload: Partial<TTSSettings> }
   | { type: 'SENTENCE_PROGRESS'; payload: SentenceProgressPayload }
-  | { type: 'PILL_STATE'; payload: { isPlaying?: boolean; rate?: number } }
-  | { type: 'HIDE_PILL' };
-
-export type PillAction =
-  | { action: 'play_pause' }
-  | { action: 'speed_up' }
-  | { action: 'speed_down' }
-  | { action: 'next_voice' }
-  | { action: 'dismiss' };
+  | { type: 'WORD_PROGRESS'; payload: WordProgressPayload }
+  | { type: 'SETTINGS_CHANGED'; payload: Partial<TTSSettings> };
 
 export type BackgroundMessage =
   | { type: 'INJECT_CONTENT_SCRIPT'; payload: { tabId: number } }
@@ -74,4 +65,5 @@ export const DEFAULT_SETTINGS: TTSSettings = {
   voice: '',
   rate: 1.0,
   pauseOnPunctuation: true,
+  sentenceGap: 300,
 };

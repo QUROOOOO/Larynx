@@ -1,8 +1,7 @@
 // Message passing utilities for Chrome extension
 
-import { OffscreenMessage, OffscreenResponse, ContentMessage, PillAction } from './types';
+import { OffscreenMessage, OffscreenResponse, ContentMessage } from './types';
 
-// Send message to offscreen document
 export function sendToOffscreen(message: OffscreenMessage): Promise<OffscreenResponse> {
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage(message, (response) => {
@@ -15,7 +14,6 @@ export function sendToOffscreen(message: OffscreenMessage): Promise<OffscreenRes
   });
 }
 
-// Send message to content script in a specific tab
 export function sendToContentScript(tabId: number, message: ContentMessage): Promise<any> {
   return new Promise((resolve, reject) => {
     chrome.tabs.sendMessage(tabId, message, (response) => {
@@ -28,15 +26,9 @@ export function sendToContentScript(tabId: number, message: ContentMessage): Pro
   });
 }
 
-export function createPillAction(action: PillAction['action']): ContentMessage {
-  return { type: 'PILL_ACTION', payload: { action } };
-}
-
-// Check if offscreen document exists
 export async function hasOffscreenDocument(): Promise<boolean> {
   if (!chrome.offscreen) return false;
   try {
-    
     const contexts = await chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT' as any] });
     return Array.isArray(contexts) && contexts.length > 0;
   } catch {
@@ -44,7 +36,6 @@ export async function hasOffscreenDocument(): Promise<boolean> {
   }
 }
 
-// Create offscreen document
 export async function createOffscreenDocument(): Promise<void> {
   if (await hasOffscreenDocument()) return;
   await chrome.offscreen.createDocument({
@@ -54,7 +45,6 @@ export async function createOffscreenDocument(): Promise<void> {
   });
 }
 
-// Close offscreen document
 export async function closeOffscreenDocument(): Promise<void> {
   if (!chrome.offscreen) return;
   try {

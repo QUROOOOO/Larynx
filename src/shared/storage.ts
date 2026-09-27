@@ -16,6 +16,7 @@ export async function getSettings(): Promise<TTSSettings> {
         voice: stored.voice ?? DEFAULT_SETTINGS.voice,
         rate: stored.rate ?? DEFAULT_SETTINGS.rate,
         pauseOnPunctuation: stored.pauseOnPunctuation ?? DEFAULT_SETTINGS.pauseOnPunctuation,
+        sentenceGap: stored.sentenceGap ?? DEFAULT_SETTINGS.sentenceGap,
       });
     });
   });
@@ -38,6 +39,7 @@ export function onSettingsChange(callback: (settings: TTSSettings) => void): () 
           voice: newValue.voice ?? DEFAULT_SETTINGS.voice,
           rate: newValue.rate ?? DEFAULT_SETTINGS.rate,
           pauseOnPunctuation: newValue.pauseOnPunctuation ?? DEFAULT_SETTINGS.pauseOnPunctuation,
+          sentenceGap: newValue.sentenceGap ?? DEFAULT_SETTINGS.sentenceGap,
         });
       }
     }

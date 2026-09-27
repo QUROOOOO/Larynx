@@ -1,162 +1,120 @@
 // Content Script — Injected on-demand via activeTab + chrome.scripting.executeScript
 // Bundled as a self-contained IIFE (classic script, no ES module imports).
-// Safe to inject multiple times: persistent state lives on window, setup runs once.
+// Handles word-level highlighting as speech progresses.
+// Safe to inject multiple times: persistent state lives on window.
 
-import { createPillAction } from '../shared/messaging';
-import type { PillAction } from '../shared/types';
-import { PillUI } from '../pill/PillUI';
-import { createRoot, type Root } from 'react-dom/client';
-import pillCss from '../pill/pill.css?inline';
+import type { ContentMessage } from '../shared/types';
 
-interface PillProps {
-  currentSentence?: string;
-  sentenceIndex?: number;
-  isPlaying: boolean;
-  rate: number;
-}
-
-interface LarynxContentState {
-  root: Root | null;
-  host: HTMLElement | null;
-  lastRect: DOMRect | null;
-  pillProps: PillProps;
+interface ContentState {
+  wordSpans: HTMLElement[];
+  currentSentenceIndex: number;
   run: () => void;
-  render: () => void;
   cleanup: () => void;
 }
 
 declare global {
   interface Window {
-    __larynx?: LarynxContentState;
-    larynxCleanup?: () => void;
+    __larynx?: ContentState;
   }
 }
 
-function getSelectionData(): { text: string; rect: DOMRect } | null {
-  const selection = window.getSelection();
-  if (!selection || selection.rangeCount === 0) return null;
-
-  const range = selection.getRangeAt(0);
-  const text = range.toString().trim();
-  if (!text) return null;
-
-  return { text, rect: range.getBoundingClientRect() };
+function clearHighlights(): void {
+  document.querySelectorAll<HTMLElement>('.larynx-word').forEach((el) => {
+    el.classList.remove('larynx-word', 'larynx-word-active');
+    el.style.background = '';
+  });
 }
 
-const EMPTY_RECT = {
-  left: 0, top: 0, width: 0, height: 0,
-  bottom: 0, right: 0, x: 0, y: 0,
-} as unknown as DOMRect;
+function highlightWord(spans: HTMLElement[], index: number): void {
+  spans.forEach((s, i) => {
+    s.classList.toggle('larynx-word-active', i === index);
+    s.style.background = i === index ? 'rgba(0,255,135,0.35)' : '';
+  });
+}
 
-function sendSelection(data: { text: string; rect: DOMRect }) {
-  chrome.runtime.sendMessage({ type: 'SELECTION', payload: data });
+function wrapWords(text: string): HTMLElement[] {
+  const words = text.split(/\s+/).filter(w => w.length > 0);
+  const spans: HTMLElement[] = [];
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0) return spans;
+
+  const container = sel.getRangeAt(0).commonAncestorContainer;
+  if (!container || container.nodeType !== Node.TEXT_NODE) return spans;
+  const parent = container.parentElement;
+  if (!parent) return spans;
+
+  const frag = document.createDocumentFragment();
+  words.forEach((word, i) => {
+    const span = document.createElement('span');
+    span.className = 'larynx-word';
+    span.textContent = (i > 0 ? ' ' : '') + word;
+    span.dataset.wordIndex = String(i);
+    spans.push(span);
+    frag.appendChild(span);
+  });
+
+  const textNode = container;
+  const next = textNode.nextSibling;
+  parent.insertBefore(frag, textNode);
+  parent.removeChild(textNode);
+  if (next) parent.insertBefore(next, frag.nextSibling);
+
+  return spans;
 }
 
 if (!window.__larynx) {
-  const state: LarynxContentState = {
-    root: null,
-    host: null,
-    lastRect: null,
-    pillProps: { isPlaying: false, rate: 1.0 },
+  const state: ContentState = {
+    wordSpans: [],
+    currentSentenceIndex: -1,
     run: () => {},
-    render: () => {},
     cleanup: () => {},
   };
   window.__larynx = state;
 
-  const handleAction = (action: string) => {
-    chrome.runtime.sendMessage(createPillAction(action as PillAction['action']));
-  };
-
-  state.render = () => {
-    if (!state.root || !state.lastRect) return;
-    state.root.render(
-      <PillUI
-        initialRect={state.lastRect}
-        onAction={handleAction}
-        currentSentence={state.pillProps.currentSentence}
-        sentenceIndex={state.pillProps.sentenceIndex}
-        isPlaying={state.pillProps.isPlaying}
-        rate={state.pillProps.rate}
-      />
-    );
-  };
-
-  const ensurePill = (rect: DOMRect) => {
-    state.lastRect = rect;
-    if (state.root) {
-      state.render();
-      return;
-    }
-
-    const host = document.createElement('div');
-    host.id = 'larynx-pill-root';
-    host.style.cssText =
-      'position:fixed;left:0;top:0;z-index:2147483647;pointer-events:none;';
-    const shadow = host.attachShadow({ mode: 'open' });
-
-    const style = document.createElement('style');
-    style.textContent = pillCss;
-    shadow.appendChild(style);
-
-    const mountPoint = document.createElement('div');
-    shadow.appendChild(mountPoint);
-    (document.body || document.documentElement).appendChild(host);
-
-    state.host = host;
-    state.root = createRoot(mountPoint);
-    state.render();
-  };
-
   state.cleanup = () => {
-    if (state.root) {
-      state.root.unmount();
-      state.root = null;
-    }
-    if (state.host) {
-      state.host.remove();
-      state.host = null;
-    }
-    state.lastRect = null;
-    state.pillProps = { isPlaying: false, rate: 1.0 };
+    clearHighlights();
+    state.wordSpans = [];
+    state.currentSentenceIndex = -1;
   };
 
   state.run = () => {
-    const data = getSelectionData();
-    if (data) {
-      sendSelection(data);
-      ensurePill(data.rect);
-    } else {
-      sendSelection({ text: '', rect: EMPTY_RECT });
-    }
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return;
+    const text = sel.toString().trim();
+    if (!text) return;
+
+    state.cleanup();
+    state.wordSpans = wrapWords(text);
+    chrome.runtime.sendMessage({
+      type: 'SELECTION',
+      payload: { text, rect: sel.getRangeAt(0).getBoundingClientRect() },
+    });
   };
 
-  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  chrome.runtime.onMessage.addListener((message: ContentMessage, _sender, sendResponse) => {
     if (message.type === 'SENTENCE_PROGRESS') {
-      state.pillProps.currentSentence = message.payload.sentenceText;
-      state.pillProps.sentenceIndex = message.payload.sentenceIndex;
-      state.pillProps.isPlaying = true;
-      state.render();
+      state.currentSentenceIndex = (message.payload as { sentenceIndex: number }).sentenceIndex;
       sendResponse({ success: true });
       return false;
     }
-    if (message.type === 'PILL_STATE') {
-      Object.assign(state.pillProps, message.payload);
-      state.render();
+    if (message.type === 'WORD_PROGRESS') {
+      const payload = message.payload as { wordIndex: number; sentenceIndex: number; wordText: string };
+      if (payload.sentenceIndex === state.currentSentenceIndex && state.wordSpans.length > 0) {
+        highlightWord(state.wordSpans, payload.wordIndex);
+      }
       sendResponse({ success: true });
       return false;
     }
-    if (message.type === 'HIDE_PILL') {
-      state.cleanup();
+    if (message.type === 'SETTINGS_CHANGED') {
+      state.run();
       sendResponse({ success: true });
       return false;
     }
     return undefined;
   });
 
-  window.larynxCleanup = state.cleanup;
+  window.__larynx = state;
   state.run();
 } else {
-  // Re-injection: state + listener already exist, just re-run selection logic
   window.__larynx.run();
 }
