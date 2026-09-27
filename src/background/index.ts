@@ -87,7 +87,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         sendResponse({ success: true });
       } else if (message.type === 'SENTENCE_START') {
         // Handle sentence progress from offscreen document
-        if (message.payload.sentenceIndex !== undefined && currentTabId) {
+        // Offscreen sends: { index: number, text: string }
+        if (message.payload.index !== undefined && currentTabId) {
           sendToContentScript(currentTabId, {
             type: 'SENTENCE_PROGRESS',
             payload: { sentenceIndex: message.payload.index, sentenceText: message.payload.text },
