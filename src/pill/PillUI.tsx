@@ -31,11 +31,9 @@ export const PillUI: React.FC<PillUIProps> = ({
 }) => {
   const [showSpeed, setShowSpeed] = useState(false);
   const [showVoices, setShowVoices] = useState(false);
-  const [mounted, setMounted] = useState(false);
   const pillRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    setMounted(true);
     if (pillRef.current && initialRect) {
       const x = initialRect.left + initialRect.width / 2;
       const y = initialRect.bottom + 8;
@@ -43,20 +41,6 @@ export const PillUI: React.FC<PillUIProps> = ({
       pillRef.current.style.top = `${y}px`;
     }
   }, [initialRect]);
-
-  useEffect(() => {
-    if (!mounted) return;
-    const el = pillRef.current;
-    if (el) {
-      el.style.opacity = '0';
-      el.style.transform = 'scale(0.9) translateY(4px)';
-      requestAnimationFrame(() => {
-        el.style.transition = 'opacity 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)';
-        el.style.opacity = '1';
-        el.style.transform = 'scale(1) translateY(0)';
-      });
-    }
-  }, [mounted]);
 
   const handleAction = (action: string) => {
     onAction(action);
@@ -67,7 +51,7 @@ export const PillUI: React.FC<PillUIProps> = ({
   return (
     <div
       ref={pillRef}
-      className="fixed z-[2147483647] pointer-events-auto animate-spring-in"
+      className="fixed z-[2147483647] pointer-events-auto font-sans animate-spring-in-center"
       style={{
         left: initialRect.left + initialRect.width / 2,
         top: initialRect.bottom + 8,
@@ -141,14 +125,14 @@ export const PillUI: React.FC<PillUIProps> = ({
                   }}
                   className={`w-full px-3 py-2 text-left text-sm transition-colors ${
                     voice.voiceURI === currentVoiceURI
-                      ? 'bg-accentDim text-accent font-medium'
+                      ? 'bg-accent-dim text-accent font-medium'
                       : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'
                   }`}
                 >
                   <div className="flex items-center justify-between">
                     <span>{voice.name}</span>
                     {voice.isNatural && (
-                      <span className="text-[10px] px-1.5 py-0.5 bg-accentDim text-accent rounded font-mono">
+                      <span className="text-[10px] px-1.5 py-0.5 bg-accent-dim text-accent rounded font-mono">
                         NATURAL
                       </span>
                     )}

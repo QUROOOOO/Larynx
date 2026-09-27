@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+@source "../options/**/*.{ts,tsx}";
+@source "../pill/**/*.{ts,tsx}";
+@source "../content/**/*.{ts,tsx}";
+
 @theme {
   --color-accent: #00FF87;
   --color-accent-dim: rgba(0, 255, 135, 0.15);
