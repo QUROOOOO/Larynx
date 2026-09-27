@@ -26,6 +26,8 @@ export interface SpeakResponse {
   error?: string;
 }
 
+export type SpeechStatus = { speaking: boolean; paused: boolean };
+
 export type OffscreenMessage =
   | { type: 'PING' }
   | { type: 'SPEAK'; payload: SpeakRequest }
@@ -34,7 +36,8 @@ export type OffscreenMessage =
   | { type: 'STOP' }
   | { type: 'SET_RATE'; payload: number }
   | { type: 'SET_VOICE'; payload: string }
-  | { type: 'GET_VOICES' };
+  | { type: 'GET_VOICES' }
+  | { type: 'GET_STATUS' };
 
 export type WordProgressPayload = { wordIndex: number; sentenceIndex: number; wordText: string };
 export type SentenceProgressPayload = { sentenceIndex: number; sentenceText: string };
@@ -42,6 +45,7 @@ export type SentenceProgressPayload = { sentenceIndex: number; sentenceText: str
 export type OffscreenResponse =
   | { type: 'PONG' }
   | { type: 'VOICES_LIST'; payload: VoiceInfo[] }
+  | { type: 'STATUS'; payload: SpeechStatus }
   | { type: 'SPEAKING_STARTED'; payload: { sentenceIndex: number } }
   | { type: 'WORD_PROGRESS'; payload: WordProgressPayload }
   | { type: 'SENTENCE_START'; payload: SentenceProgressPayload }

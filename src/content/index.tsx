@@ -25,24 +25,44 @@ declare global {
 /**
  * The extension's own stylesheet is only bundled into the options page, so the
  * highlight rules have to be injected into whichever host page is being read.
+ *
+ * The selectors are deliberately specific and the colour declarations carry
+ * `!important` so an aggressive host-page reset (or a site that colours spans)
+ * cannot leave the word highlight invisible.
  */
 function ensureStyles(): void {
   if (document.getElementById(STYLE_ID)) return;
   const style = document.createElement('style');
   style.id = STYLE_ID;
-  style.textContent =
-    `.${WORD_CLASS}{border-radius:3px;transition:background-color .12s linear,box-shadow .12s linear}` +
-    `.${ACTIVE_CLASS}{background-color:rgba(0,255,135,.35);box-shadow:0 0 0 1px rgba(0,255,135,.45)}`;
+  style.textContent = `
+    .${WORD_CLASS} {
+      border-radius: 4px !important;
+      padding: 0 1px !important;
+      margin: 0 -1px !important;
+      background-color: transparent !important;
+      background-image: none !important;
+      box-shadow: none !important;
+      outline: none !important;
+      color: inherit !important;
+      text-decoration: none !important;
+      transition: background-color .12s linear, box-shadow .12s linear;
+      -webkit-box-decoration-break: clone;
+      box-decoration-break: clone;
+    }
+    .${ACTIVE_CLASS} {
+      background-color: rgba(0, 255, 135, 0.32) !important;
+      background-image: none !important;
+      box-shadow: inset 0 -2px 0 0 rgba(0, 255, 135, 0.9), 0 0 0 1px rgba(0, 255, 135, 0.55), 0 0 12px rgba(0, 255, 135, 0.35) !important;
+      border-radius: 4px !important;
+    }`;
   (document.head || document.documentElement).appendChild(style);
 }
 
 function highlightWord(spans: HTMLElement[], index: number): void {
   if (index < 0 || index >= spans.length) return;
-  spans.forEach((span, i) => {
-    const active = i === index;
-    span.classList.toggle(ACTIVE_CLASS, active);
-    span.style.background = active ? 'rgba(0,255,135,0.35)' : '';
-  });
+  for (let i = 0; i < spans.length; i++) {
+    spans[i].classList.toggle(ACTIVE_CLASS, i === index);
+  }
 }
 
 /** Every text node touched by the range, in document order. */
@@ -65,7 +85,14 @@ function collectTextNodes(range: Range): Text[] {
   return nodes;
 }
 
-/** Replaces the covered slice of one text node with per-word spans. */
+/**
+ * Replaces the covered slice of one text node with per-word spans.
+ *
+ * Every character of the original slice is preserved verbatim: the text between
+ * words (and any leading/trailing whitespace) is emitted as real text nodes using
+ * the exact original substring, never a normalised " ". Collapsing the separators
+ * would visibly rewrite the host page's text once the spans are unwrapped.
+ */
 function wrapTextNode(node: Text, start: number, end: number, spans: HTMLElement[]): void {
   const parent = node.parentNode;
   if (!parent) return;
@@ -80,18 +107,27 @@ function wrapTextNode(node: Text, start: number, end: number, spans: HTMLElement
     fragment.appendChild(document.createTextNode(node.data.slice(0, start)));
   }
 
-  // Whitespace lives outside the spans so each span holds exactly one word and
-  // its textContent matches what the speech engine reports.
-  const words = covered.split(/\s+/).filter((w) => w.length > 0);
-  words.forEach((word, i) => {
-    if (i > 0) fragment.appendChild(document.createTextNode(' '));
+  // Walk the word matches and copy the gaps between them through untouched, so
+  // each span holds exactly one word and the separators keep their original form.
+  const wordPattern = /\S+/g;
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+  while ((match = wordPattern.exec(covered)) !== null) {
+    if (match.index > cursor) {
+      fragment.appendChild(document.createTextNode(covered.slice(cursor, match.index)));
+    }
     const span = document.createElement('span');
     span.className = WORD_CLASS;
-    span.textContent = word;
+    span.textContent = match[0];
     span.dataset.wordIndex = String(spans.length);
     spans.push(span);
     fragment.appendChild(span);
-  });
+    cursor = match.index + match[0].length;
+  }
+
+  if (cursor < covered.length) {
+    fragment.appendChild(document.createTextNode(covered.slice(cursor)));
+  }
 
   if (end < node.data.length) {
     fragment.appendChild(document.createTextNode(node.data.slice(end)));
@@ -120,20 +156,24 @@ function wrapSelection(selection: Selection): HTMLElement[] {
   return spans;
 }
 
-/** Undoes the wrapping so the page is left exactly as it was found. */
+/**
+ * Undoes the wrapping so the page is left byte-for-byte as it was found.
+ *
+ * The separators between words are real text nodes, so each span simply becomes a
+ * plain text node again. No separator is synthesised here — inserting one would
+ * change the rendered text of the host page.
+ */
 function unwrap(spans: HTMLElement[]): void {
   const parents = new Set<Node>();
 
   spans.forEach((span) => {
     const parent = span.parentNode;
     if (!parent) return;
-    const next = span.nextSibling;
-    if (next) parent.insertBefore(document.createTextNode(' '), next);
-    parent.removeChild(span);
+    parent.replaceChild(document.createTextNode(span.textContent || ''), span);
     parents.add(parent);
   });
 
-  // Collapse the separator text nodes back into their neighbours.
+  // Merge the adjacent text nodes that used to be one.
   parents.forEach((parent) => parent.normalize());
 }
 
@@ -164,6 +204,17 @@ if (!window.__larynx) {
     // after the page has already been wrapped and unwrapped.
     if (!text && !state.lastText) return;
 
+    // Wrapping replaces the very nodes the range points at, so the on-screen
+    // rectangle has to be read before the DOM is touched.
+    let rect: DOMRect | null = null;
+    if (text && selection && selection.rangeCount > 0) {
+      try {
+        rect = selection.getRangeAt(0).getBoundingClientRect();
+      } catch {
+        rect = null;
+      }
+    }
+
     state.cleanup();
 
     const activeText = text || state.lastText;
@@ -175,7 +226,7 @@ if (!window.__larynx) {
     }
 
     chrome.runtime.sendMessage(
-      { type: 'SELECTION', payload: { text: activeText, rect: selection?.getRangeAt(0).getBoundingClientRect() ?? null } },
+      { type: 'SELECTION', payload: { text: activeText, rect } },
       (response) => {
         if (chrome.runtime.lastError) {
           console.error('[Larynx] Speak request failed:', chrome.runtime.lastError.message);

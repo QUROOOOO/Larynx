@@ -9,6 +9,7 @@ import {
   OffscreenMessage,
   OffscreenResponse,
   SpeakRequest,
+  SpeechStatus,
   VoiceInfo,
   TTSSettings,
 } from '../shared/types';
@@ -22,6 +23,7 @@ const OFFSCREEN_MESSAGE_TYPES = new Set<OffscreenMessage['type']>([
   'SET_RATE',
   'SET_VOICE',
   'GET_VOICES',
+  'GET_STATUS',
 ]);
 
 const WORD_TICK_MS = 30;
@@ -81,6 +83,15 @@ function getVoices(): VoiceInfo[] {
 function findVoice(voiceURI: string): SpeechSynthesisVoice | null {
   if (!window.speechSynthesis || !voiceURI) return null;
   return window.speechSynthesis.getVoices().find((v) => v.voiceURI === voiceURI) || null;
+}
+
+/** Playback state the background worker polls to drive the pause/resume toggle. */
+function getStatus(): SpeechStatus {
+  const synth = window.speechSynthesis;
+  return {
+    speaking: isProcessing || Boolean(synth && synth.speaking),
+    paused: isPaused,
+  };
 }
 
 /* ------------------------------------------------------------------ *
@@ -159,6 +170,36 @@ function splitClauses(text: string, pauseOnPunctuation: boolean): string[] {
   return clauses.length > 0 ? clauses : [text];
 }
 
+/** Word texts plus each word's character offset, so a boundary charIndex can be mapped back. */
+function tokenizeWithOffsets(text: string): { words: string[]; offsets: number[] } {
+  const words: string[] = [];
+  const offsets: number[] = [];
+  const pattern = /\S+/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text)) !== null) {
+    offsets.push(match.index);
+    words.push(match[0]);
+  }
+  return { words, offsets };
+}
+
+/** Binary-searches the word containing `charIndex`. */
+function wordIndexAt(offsets: number[], charIndex: number): number {
+  let low = 0;
+  let high = offsets.length - 1;
+  let found = 0;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    if (offsets[mid] <= charIndex) {
+      found = mid;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return found;
+}
+
 function speakUtterance(
   text: string,
   settings: TTSSettings,
@@ -180,16 +221,40 @@ function speakUtterance(
     utterance.pitch = 1.0;
     utterance.volume = 1.0;
 
-    const words = text.split(/\s+/).filter((w) => w.length > 0);
+    const { words, offsets } = tokenizeWithOffsets(text);
+    // Chrome fires `boundary` with a real charIndex; the ticker is only a
+    // fallback for engines that never do.
+    let sawBoundary = false;
+
+    const emit = (local: number) => {
+      if (local < 0 || local >= words.length) return;
+      send({
+        type: 'WORD_PROGRESS',
+        payload: { wordIndex: base + local, sentenceIndex, wordText: words[local] },
+      });
+    };
 
     utterance.onstart = () => {
       send({ type: 'SPEAKING_STARTED', payload: { sentenceIndex } });
       startWordTicker(sentenceIndex, words, base, settings.rate);
     };
 
+    utterance.onboundary = (event) => {
+      const charIndex = (event as SpeechSynthesisEvent).charIndex;
+      if (typeof charIndex !== 'number' || offsets.length === 0) return;
+      // Ground truth arrived, so the estimate would only fight it.
+      if (!sawBoundary) {
+        sawBoundary = true;
+        stopWordTicker();
+      }
+      emit(wordIndexAt(offsets, charIndex));
+    };
+
     utterance.onend = () => {
       stopWordTicker();
       currentUtterance = null;
+      // The final word gets no boundary event of its own.
+      if (sawBoundary) emit(words.length - 1);
       resolve(words.length);
     };
 
@@ -361,6 +426,11 @@ chrome.runtime.onMessage.addListener((message: OffscreenMessage, _sender, sendRe
             if (voice) currentUtterance.voice = voice;
           }
           sendResponse({ success: true });
+          break;
+        }
+
+        case 'GET_STATUS': {
+          sendResponse({ type: 'STATUS', payload: getStatus() });
           break;
         }
 
