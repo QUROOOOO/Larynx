@@ -85,6 +85,19 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       } else if (message.type === 'SETTINGS_CHANGED') {
         await getSettings();
         sendResponse({ success: true });
+      } else if (message.type === 'SENTENCE_START') {
+        // Handle sentence progress from offscreen document
+        if (message.payload.sentenceIndex !== undefined && currentTabId) {
+          sendToContentScript(currentTabId, {
+            type: 'SENTENCE_PROGRESS',
+            payload: { sentenceIndex: message.payload.index, sentenceText: message.payload.text },
+          });
+        }
+        sendResponse({ success: true });
+      } else if (message.type === 'SPEAKING_ENDED') {
+        // Speech finished - reset idle timer to close offscreen doc soon
+        resetOffscreenIdleTimer();
+        sendResponse({ success: true });
       }
     } catch (error) {
       sendResponse({ success: false, error: (error as Error).message });
@@ -92,23 +105,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   })();
 
   return true;
-});
-
-// Handle messages from offscreen document (speech events)
-chrome.runtime.onMessageExternal.addListener((message, sender, _sendResponse) => {
-  // Only accept messages from our own offscreen document
-  if (sender.id !== chrome.runtime.id) return;
-
-  if (message.type === 'SPEAKING_ENDED') {
-    // Speech finished - reset idle timer to close offscreen doc soon
-    resetOffscreenIdleTimer();
-  } else if (message.type === 'SENTENCE_START' && currentTabId) {
-    // Forward sentence progress to content script for pill UI
-    sendToContentScript(currentTabId, {
-      type: 'SENTENCE_PROGRESS',
-      payload: { sentenceIndex: message.payload.index, sentenceText: message.payload.text },
-    });
-  }
 });
 
 // Listen for storage changes from options page
@@ -120,12 +116,6 @@ onSettingsChange((newSettings) => {
       sendToOffscreen({ type: 'SET_VOICE', payload: newSettings.voice });
     }
   });
-});
-
-// Cleanup on extension unload
-chrome.runtime.onSuspend.addListener(() => {
-  if (offscreenIdleTimer) clearTimeout(offscreenIdleTimer);
-  closeOffscreenDocument();
 });
 
 console.log('[Larynx] Background service worker loaded');
