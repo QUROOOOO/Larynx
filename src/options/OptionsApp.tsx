@@ -20,6 +20,8 @@ import { VoiceInfo, DEFAULT_SETTINGS } from '../shared/types';
 const ACCENT = '#00ff87';
 const PREVIEW_TEXT = 'The quick brown fox jumps over the lazy dog.';
 const COMMAND_NAME = 'speak-selection';
+const RECORDING_TIMEOUT_MS = 5000;
+const SHORTCUT_UPDATE_TIMEOUT_MS = 2500;
 
 // Signals that a voice sounds like a modern neural engine rather than a legacy formant synth.
 const NATURAL_KEYWORDS = [
@@ -86,12 +88,17 @@ const LANG_LABELS: Record<string, string> = {
   hu: 'Hungarian',
 };
 
-// @types/chrome omits commands.update, which is available at runtime in the options page.
+// @types/chrome omits commands.update and commands.onChanged, both of which exist
+// at runtime in the options page and are needed to keep the shortcut in sync.
 type CommandsWithUpdate = {
   update: (
     info: { name: string; shortcut?: string },
     callback: () => void,
   ) => void;
+  onChanged?: {
+    addListener: (callback: () => void) => void;
+    removeListener: (callback: () => void) => void;
+  };
 };
 
 const isMac = typeof navigator !== 'undefined' && /Mac|iP(hone|ad|od)/.test(navigator.platform || '');
@@ -103,7 +110,11 @@ function prettyShortcut(shortcut: string): string {
     : shortcut.replace(/Command/g, 'Ctrl').replace(/MacCtrl/g, 'Ctrl');
 }
 
-function normalizeShortcut(e: React.KeyboardEvent): string | null {
+// Accepts native DOM events as well as React synthetic events so the recorder can
+// listen on the document in the capture phase without duplicating the parser.
+type ShortcutKeyLike = Pick<KeyboardEvent, 'key' | 'ctrlKey' | 'metaKey' | 'altKey' | 'shiftKey'>;
+
+function normalizeShortcut(e: ShortcutKeyLike): string | null {
   const parts: string[] = [];
   if (e.ctrlKey) parts.push('Ctrl');
   if (e.metaKey) parts.push('Command');
@@ -161,6 +172,116 @@ const Switch: React.FC<{
   </button>
 );
 
+// The native <select> renders an OS-styled light menu on Windows that ignores the
+// dark page chrome, so the language filter is a real listbox instead.
+const Dropdown: React.FC<{
+  value: string;
+  options: Array<{ value: string; label: string }>;
+  onChange: (value: string) => void;
+  label: string;
+  className?: string;
+}> = ({ value, options, onChange, label, className = '' }) => {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+
+    const onPointerDown = (event: MouseEvent) => {
+      if (!wrapRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.stopPropagation();
+        setOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown, true);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    listRef.current
+      ?.querySelector<HTMLElement>('[data-active="true"]')
+      ?.scrollIntoView({ block: 'nearest' });
+  }, [open]);
+
+  const selected = options.find(o => o.value === value);
+
+  const move = (delta: number) => {
+    const index = options.findIndex(o => o.value === value);
+    if (index < 0) return;
+    const next = options[(index + delta + options.length) % options.length];
+    if (next) onChange(next.value);
+  };
+
+  return (
+    <div ref={wrapRef} className={`relative shrink-0 ${className}`}>
+      <button
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={label}
+        onClick={() => setOpen(v => !v)}
+        onKeyDown={e => {
+          if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            e.preventDefault();
+            if (!open) setOpen(true);
+            else move(e.key === 'ArrowDown' ? 1 : -1);
+          }
+        }}
+        className="w-full flex items-center justify-between gap-2 px-3 py-2 text-sm bg-white/[0.03] border border-white/10 rounded-lg text-gray-200 hover:border-white/20 focus:outline-none focus-visible:border-[#00ff87]/50 transition-colors"
+      >
+        <span className="truncate">{selected?.label ?? label}</span>
+        <ChevronDown
+          size={14}
+          strokeWidth={2}
+          className={`shrink-0 text-gray-500 transition-transform duration-200 ${open ? 'rotate-180' : ''}`}
+        />
+      </button>
+
+      {open && (
+        <div
+          ref={listRef}
+          role="listbox"
+          aria-label={label}
+          className="absolute z-30 mt-1.5 w-full max-h-64 overflow-y-auto rounded-lg border border-white/12 bg-[#141414] p-1 shadow-2xl shadow-black/60"
+        >
+          {options.map(option => {
+            const isSelected = option.value === value;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                role="option"
+                aria-selected={isSelected}
+                data-active={isSelected}
+                onClick={() => {
+                  onChange(option.value);
+                  setOpen(false);
+                }}
+                className={`w-full flex items-center justify-between gap-2 px-2.5 py-2 text-left text-sm rounded-md transition-colors ${
+                  isSelected ? 'bg-[#00ff87]/12 text-[#00ff87]' : 'text-gray-300 hover:bg-white/5'
+                }`}
+              >
+                <span className="truncate">{option.label}</span>
+                {isSelected && <Check size={14} strokeWidth={2.5} className="shrink-0" />}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
+
 export const OptionsApp: React.FC = () => {
   const [settings, setSettingsState] = useState<TTSSettings>(DEFAULT_SETTINGS);
   const [voices, setVoices] = useState<VoiceInfo[]>([]);
@@ -177,6 +298,8 @@ export const OptionsApp: React.FC = () => {
   const [shortcutError, setShortcutError] = useState('');
   const [shortcutSaved, setShortcutSaved] = useState(false);
   const shortcutTimer = useRef<number | null>(null);
+  const shortcutUpdateTimer = useRef<number | null>(null);
+  const savedTimer = useRef<number | null>(null);
 
   useEffect(() => {
     getSettings().then(s => {
@@ -236,13 +359,23 @@ export const OptionsApp: React.FC = () => {
   }, []);
 
   // Read the live shortcut so the recorder shows reality, not the manifest default.
-  useEffect(() => {
+  const readShortcut = useCallback(() => {
     if (typeof chrome === 'undefined' || !chrome.commands) return;
     chrome.commands.getAll(commands => {
       const cmd = commands.find(c => c.name === COMMAND_NAME);
-      if (cmd?.shortcut) setShortcut(cmd.shortcut);
+      setShortcut(cmd?.shortcut ?? '');
     });
   }, []);
+
+  // Stay in sync when the shortcut is changed from chrome://extensions/shortcuts,
+  // where Chrome will happily accept combinations our own validator rejects.
+  useEffect(() => {
+    readShortcut();
+    const onChanged = (chrome.commands as unknown as CommandsWithUpdate | undefined)?.onChanged;
+    if (!onChanged) return;
+    onChanged.addListener(readShortcut);
+    return () => onChanged.removeListener(readShortcut);
+  }, [readShortcut]);
 
   const handleSettingChange = useCallback(async (partial: Partial<TTSSettings>) => {
     const next = { ...settings, ...partial };
@@ -326,16 +459,36 @@ export const OptionsApp: React.FC = () => {
     });
   }, [voices, search, langFilter, onlyNatural]);
 
+  const selectedVoice = useMemo(
+    () => voices.find(v => v.voiceURI === selectedVoiceURI) ?? null,
+    [voices, selectedVoiceURI],
+  );
+
+  const pinnedSelected = useMemo(() => {
+    if (!selectedVoice) return null;
+    // Only pin when the active voice still passes the current filters.
+    return filtered.some(v => v.voiceURI === selectedVoice.voiceURI) ? selectedVoice : null;
+  }, [filtered, selectedVoice]);
+
   const grouped = useMemo(() => {
     const map = new Map<string, VoiceInfo[]>();
     for (const v of filtered) {
+      if (selectedVoice && v.voiceURI === selectedVoice.voiceURI) continue;
       const key = baseLang(v.lang);
       const bucket = map.get(key);
       if (bucket) bucket.push(v);
       else map.set(key, [v]);
     }
     return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-  }, [filtered]);
+  }, [filtered, selectedVoice]);
+
+  const languageOptions = useMemo(
+    () => [
+      { value: 'all', label: 'All languages' },
+      ...languages.map(l => ({ value: l, label: LANG_LABELS[l] ?? l })),
+    ],
+    [languages],
+  );
 
   const clearRecording = useCallback(() => {
     if (shortcutTimer.current !== null) {
@@ -344,7 +497,14 @@ export const OptionsApp: React.FC = () => {
     }
   }, []);
 
-  useEffect(() => clearRecording, [clearRecording]);
+  useEffect(
+    () => () => {
+      clearRecording();
+      if (shortcutUpdateTimer.current !== null) window.clearTimeout(shortcutUpdateTimer.current);
+      if (savedTimer.current !== null) window.clearTimeout(savedTimer.current);
+    },
+    [clearRecording],
+  );
 
   const startRecording = useCallback(() => {
     setRecording(true);
@@ -354,7 +514,7 @@ export const OptionsApp: React.FC = () => {
     shortcutTimer.current = window.setTimeout(() => {
       setRecording(false);
       shortcutTimer.current = null;
-    }, 5000);
+    }, RECORDING_TIMEOUT_MS);
   }, [clearRecording]);
 
   const saveShortcut = useCallback(
@@ -363,45 +523,130 @@ export const OptionsApp: React.FC = () => {
         setShortcutError('Shortcuts are only configurable in the browser.');
         return;
       }
-      (chrome.commands as unknown as CommandsWithUpdate).update({ name: COMMAND_NAME, shortcut: next }, () => {        const err = chrome.runtime.lastError;
-        if (err) {
-          setShortcutError(`Chrome rejected that shortcut — ${err.message}`);
-          chrome.commands.getAll(commands => {
-            const cmd = commands.find(c => c.name === COMMAND_NAME);
-            if (cmd?.shortcut) setShortcut(cmd.shortcut);
-          });
-        } else {
-          setShortcut(next);
-          setShortcutError('');
-          setShortcutSaved(true);
-          window.setTimeout(() => setShortcutSaved(false), 2500);
+      let settled = false;
+      const settle = (message: string) => {
+        if (settled) return;
+        settled = true;
+        clearRecording();
+        if (shortcutUpdateTimer.current !== null) {
+          window.clearTimeout(shortcutUpdateTimer.current);
+          shortcutUpdateTimer.current = null;
         }
-      });
+        // Re-read so the field always reflects what Chrome actually stored, even if it
+        // silently dropped a combination it considers invalid.
+        readShortcut();
+        if (message) {
+          setShortcutError(message);
+          return;
+        }
+        setShortcutError('');
+        setShortcutSaved(true);
+        if (savedTimer.current !== null) window.clearTimeout(savedTimer.current);
+        savedTimer.current = window.setTimeout(() => {
+          setShortcutSaved(false);
+          savedTimer.current = null;
+        }, 2500);
+      };
+      // Chrome never invokes the update callback when the page is closing, so bound the
+      // wait rather than letting the button hang in its pending state forever.
+      shortcutUpdateTimer.current = window.setTimeout(
+        () => settle('Chrome did not confirm the change. Try again, or set it in Chrome shortcut settings.'),
+        SHORTCUT_UPDATE_TIMEOUT_MS,
+      );
+      (chrome.commands as unknown as CommandsWithUpdate).update(
+        { name: COMMAND_NAME, shortcut: next },
+        () => {
+          const err = chrome.runtime.lastError;
+          settle(err ? `Chrome rejected that shortcut — ${err.message}` : '');
+        },
+      );
     },
-    [],
+    [clearRecording, readShortcut],
   );
 
-  const onShortcutKey = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (!recording) return;
-      e.preventDefault();
-      e.stopPropagation();
-      if (e.key === 'Escape') {
+  // Record on the document in the capture phase: a plain button-scoped onKeyDown misses
+  // keys whenever focus drifts, and Chrome rejects shortcuts the page never saw.
+  useEffect(() => {
+    if (!recording) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === 'Escape') {
         setRecording(false);
         clearRecording();
         return;
       }
-      const next = normalizeShortcut(e);
+      const next = normalizeShortcut(event);
       if (!next) return;
       setRecording(false);
       clearRecording();
       saveShortcut(next);
-    },
-    [recording, clearRecording, saveShortcut],
-  );
+    };
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => document.removeEventListener('keydown', onKeyDown, true);
+  }, [recording, clearRecording, saveShortcut]);
 
   const totalVoices = voices.length;
   const shownVoices = filtered.length;
+
+  const renderVoiceRow = (voice: VoiceInfo) => {
+    const isSelected = selectedVoiceURI === voice.voiceURI;
+    const isPlaying = previewingURI === voice.voiceURI;
+    return (
+      <div
+        key={voice.voiceURI}
+        className={`flex items-center gap-2 pl-4 pr-2 py-2.5 rounded-xl border transition-all ${
+          isSelected
+            ? 'border-[#00ff87]/50 bg-[#00ff87]/10'
+            : 'border-white/10 bg-white/[0.02] hover:border-white/20'
+        }`}
+      >
+        <button
+          type="button"
+          onClick={() => handleVoiceChange(voice.voiceURI)}
+          className="flex-1 min-w-0 flex items-center gap-3 text-left focus:outline-none"
+        >
+          <div
+            className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center ${
+              voice.isNatural ? 'bg-[#00ff87]/15 text-[#00ff87]' : 'bg-white/5 text-gray-500'
+            }`}
+          >
+            <Mic size={16} strokeWidth={2} />
+          </div>
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-white truncate">{voice.name}</p>
+            <p className="text-xs text-gray-500 font-mono truncate">{voice.lang}</p>
+          </div>
+        </button>
+
+        <div className="flex items-center gap-1.5 shrink-0">
+          {voice.isNatural && (
+            <span className="px-2 py-0.5 text-[10px] font-mono font-medium text-[#00ff87] bg-[#00ff87]/10 rounded">
+              BEST
+            </span>
+          )}
+          {voice.localService && (
+            <span className="px-2 py-0.5 text-[10px] font-mono text-gray-500 bg-white/5 rounded">
+              LOCAL
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => previewVoice(voice.voiceURI)}
+            aria-label={`${isPlaying ? 'Stop' : 'Preview'} ${voice.name}`}
+            className={`w-8 h-8 rounded-full flex items-center justify-center border transition-colors ${
+              isPlaying
+                ? 'border-[#00ff87] bg-[#00ff87]/20 text-[#00ff87]'
+                : 'border-white/10 text-gray-400 hover:border-[#00ff87]/50 hover:text-[#00ff87]'
+            }`}
+          >
+            <Play size={13} strokeWidth={2.5} className={isPlaying ? 'animate-pulse' : ''} />
+          </button>
+          {isSelected && <Check size={16} strokeWidth={2.5} color={ACCENT} />}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-gray-100 font-sans">
@@ -457,19 +702,13 @@ export const OptionsApp: React.FC = () => {
                     className="w-full pl-9 pr-3 py-2 text-sm bg-white/[0.03] border border-white/10 rounded-lg text-white placeholder-gray-600 focus:outline-none focus:border-[#00ff87]/50"
                   />
                 </div>
-                <select
+                <Dropdown
                   value={langFilter}
-                  onChange={e => setLangFilter(e.target.value)}
-                  aria-label="Filter by language"
-                  className="px-3 py-2 text-sm bg-white/[0.03] border border-white/10 rounded-lg text-gray-200 focus:outline-none focus:border-[#00ff87]/50"
-                >
-                  <option value="all">All languages</option>
-                  {languages.map(l => (
-                    <option key={l} value={l}>
-                      {LANG_LABELS[l] ?? l}
-                    </option>
-                  ))}
-                </select>
+                  options={languageOptions}
+                  onChange={setLangFilter}
+                  label="Filter by language"
+                  className="sm:w-48 w-full"
+                />
                 <button
                   type="button"
                   onClick={() => setOnlyNatural(v => !v)}
@@ -494,71 +733,21 @@ export const OptionsApp: React.FC = () => {
                 </div>
               ) : (
                 <div className="space-y-4 max-h-[34rem] overflow-y-auto pr-1">
+                  {pinnedSelected && (
+                    <div>
+                      <p className="text-[11px] font-mono uppercase tracking-wider text-[#00ff87]/70 sticky top-0 bg-[#0a0a0a]/95 py-1.5 backdrop-blur-sm">
+                        In use
+                      </p>
+                      <div className="space-y-2 mt-1">{renderVoiceRow(pinnedSelected)}</div>
+                    </div>
+                  )}
+
                   {grouped.map(([lang, list]) => (
                     <div key={lang}>
                       <p className="text-[11px] font-mono uppercase tracking-wider text-gray-500 sticky top-0 bg-[#0a0a0a]/95 py-1.5 backdrop-blur-sm">
                         {LANG_LABELS[lang] ?? lang} · {list.length}
                       </p>
-                      <div className="space-y-2 mt-1">
-                        {list.map(voice => {
-                          const isSelected = selectedVoiceURI === voice.voiceURI;
-                          const isPlaying = previewingURI === voice.voiceURI;
-                          return (
-                            <div
-                              key={voice.voiceURI}
-                              className={`flex items-center gap-2 pl-4 pr-2 py-2.5 rounded-xl border transition-all ${
-                                isSelected
-                                  ? 'border-[#00ff87]/50 bg-[#00ff87]/10'
-                                  : 'border-white/10 bg-white/[0.02] hover:border-white/20'
-                              }`}
-                            >
-                              <button
-                                type="button"
-                                onClick={() => handleVoiceChange(voice.voiceURI)}
-                                className="flex-1 min-w-0 flex items-center gap-3 text-left focus:outline-none"
-                              >
-                                <div
-                                  className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center ${
-                                    voice.isNatural ? 'bg-[#00ff87]/15 text-[#00ff87]' : 'bg-white/5 text-gray-500'
-                                  }`}
-                                >
-                                  <Mic size={16} strokeWidth={2} />
-                                </div>
-                                <div className="min-w-0">
-                                  <p className="text-sm font-medium text-white truncate">{voice.name}</p>
-                                  <p className="text-xs text-gray-500 font-mono truncate">{voice.lang}</p>
-                                </div>
-                              </button>
-
-                              <div className="flex items-center gap-1.5 shrink-0">
-                                {voice.isNatural && (
-                                  <span className="px-2 py-0.5 text-[10px] font-mono font-medium text-[#00ff87] bg-[#00ff87]/10 rounded">
-                                    BEST
-                                  </span>
-                                )}
-                                {voice.localService && (
-                                  <span className="px-2 py-0.5 text-[10px] font-mono text-gray-500 bg-white/5 rounded">
-                                    LOCAL
-                                  </span>
-                                )}
-                                <button
-                                  type="button"
-                                  onClick={() => previewVoice(voice.voiceURI)}
-                                  aria-label={`${isPlaying ? 'Stop' : 'Preview'} ${voice.name}`}
-                                  className={`w-8 h-8 rounded-full flex items-center justify-center border transition-colors ${
-                                    isPlaying
-                                      ? 'border-[#00ff87] bg-[#00ff87]/20 text-[#00ff87]'
-                                      : 'border-white/10 text-gray-400 hover:border-[#00ff87]/50 hover:text-[#00ff87]'
-                                  }`}
-                                >
-                                  <Play size={13} strokeWidth={2.5} className={isPlaying ? 'animate-pulse' : ''} />
-                                </button>
-                                {isSelected && <Check size={16} strokeWidth={2.5} color={ACCENT} />}
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
+                      <div className="space-y-2 mt-1">{list.map(renderVoiceRow)}</div>
                     </div>
                   ))}
                 </div>
@@ -669,7 +858,6 @@ export const OptionsApp: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => (recording ? (setRecording(false), clearRecording()) : startRecording())}
-                  onKeyDown={onShortcutKey}
                   className={`px-3 py-2 rounded-lg text-xs font-mono border transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00ff87]/60 ${
                     recording
                       ? 'border-[#00ff87] bg-[#00ff87]/15 text-[#00ff87] animate-pulse'
@@ -709,7 +897,7 @@ export const OptionsApp: React.FC = () => {
         </section>
 
         <footer className="border-t border-white/5 pt-6 text-center">
-          <p className="text-sm text-gray-600">Larynx v1.0.5 — Built with Web Speech API</p>
+          <p className="text-sm text-gray-600">Larynx v1.0.6 — Built with Web Speech API</p>
         </footer>
       </main>
     </div>

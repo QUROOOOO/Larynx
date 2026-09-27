@@ -9,6 +9,15 @@ const WORD_CLASS = 'larynx-word';
 const ACTIVE_CLASS = 'larynx-word-active';
 const STYLE_ID = 'larynx-word-styles';
 
+/** Delay between two words while catching up across a gap. */
+const CATCHUP_STEP_MS = 34;
+
+/** Index of the word currently carrying the active class, or -1. */
+let currentIndex = -1;
+
+/** Pending catch-up step, if one is in flight. */
+let catchUpTimer: ReturnType<typeof setTimeout> | null = null;
+
 interface ContentState {
   wordSpans: HTMLElement[];
   lastText: string;
@@ -26,9 +35,17 @@ declare global {
  * The extension's own stylesheet is only bundled into the options page, so the
  * highlight rules have to be injected into whichever host page is being read.
  *
- * The selectors are deliberately specific and the colour declarations carry
- * `!important` so an aggressive host-page reset (or a site that colours spans)
- * cannot leave the word highlight invisible.
+ * Two things this has to defeat:
+ *
+ * 1. Host-page resets. The selectors are specific and every colour declaration
+ *    carries `!important` so a site that colours spans, or a `*` reset, cannot
+ *    leave the word highlight invisible.
+ *
+ * 2. The native selection. The user's text is still selected while it is being
+ *    read, and the UA paints that selection *on top of* our background — which
+ *    is why a plain highlight ends up hidden under a blue block. Overriding
+ *    `::selection` on our own spans replaces the UA colour with the highlight
+ *    itself, while leaving the selection intact so the text stays copyable.
  */
 function ensureStyles(): void {
   if (document.getElementById(STYLE_ID)) return;
@@ -36,33 +53,83 @@ function ensureStyles(): void {
   style.id = STYLE_ID;
   style.textContent = `
     .${WORD_CLASS} {
-      border-radius: 4px !important;
-      padding: 0 1px !important;
-      margin: 0 -1px !important;
       background-color: transparent !important;
       background-image: none !important;
       box-shadow: none !important;
       outline: none !important;
+      border: none !important;
       color: inherit !important;
       text-decoration: none !important;
-      transition: background-color .12s linear, box-shadow .12s linear;
+      /* No padding or negative margin: a highlight must never reflow the page. */
+      padding: 0 !important;
+      margin: 0 !important;
+      border-radius: 3px !important;
+      transition: background-color .1s linear;
       -webkit-box-decoration-break: clone;
       box-decoration-break: clone;
     }
     .${ACTIVE_CLASS} {
-      background-color: rgba(0, 255, 135, 0.32) !important;
+      background-color: rgba(0, 255, 135, 0.34) !important;
       background-image: none !important;
-      box-shadow: inset 0 -2px 0 0 rgba(0, 255, 135, 0.9), 0 0 0 1px rgba(0, 255, 135, 0.55), 0 0 12px rgba(0, 255, 135, 0.35) !important;
-      border-radius: 4px !important;
+      box-shadow: none !important;
+      border: none !important;
+    }
+    .${WORD_CLASS}::selection {
+      background-color: transparent !important;
+      color: inherit !important;
+    }
+    .${ACTIVE_CLASS}::selection {
+      background-color: rgba(0, 255, 135, 0.34) !important;
+      color: inherit !important;
     }`;
   (document.head || document.documentElement).appendChild(style);
 }
 
+/**
+ * Paints exactly one word. The previous word is tracked by reference rather than
+ * by re-scanning the list, so two words can never be highlighted at once.
+ */
+function paintWord(spans: HTMLElement[], index: number): void {
+  if (index < 0 || index >= spans.length) return;
+  if (currentIndex >= 0 && currentIndex < spans.length && currentIndex !== index) {
+    spans[currentIndex].classList.remove(ACTIVE_CLASS);
+  }
+  spans[index].classList.add(ACTIVE_CLASS);
+  currentIndex = index;
+}
+
+/**
+ * Advances the highlight to `index`.
+ *
+ * The offscreen sequencer already emits every word in order, so this normally
+ * just paints the next word. If a future engine change ever delivers an index
+ * that jumps ahead, the gap is walked one word at a time so the reader still
+ * sees every word pass by — the highlight degrades into a fast catch-up rather
+ * than silently dropping words.
+ */
 function highlightWord(spans: HTMLElement[], index: number): void {
   if (index < 0 || index >= spans.length) return;
-  for (let i = 0; i < spans.length; i++) {
-    spans[i].classList.toggle(ACTIVE_CLASS, i === index);
+
+  if (catchUpTimer !== null) {
+    clearTimeout(catchUpTimer);
+    catchUpTimer = null;
   }
+
+  if (index <= currentIndex + 1) {
+    paintWord(spans, index);
+    return;
+  }
+
+  const step = () => {
+    const next = currentIndex + 1;
+    paintWord(spans, next);
+    if (next < index) {
+      catchUpTimer = setTimeout(step, CATCHUP_STEP_MS);
+    } else {
+      catchUpTimer = null;
+    }
+  };
+  step();
 }
 
 /** Every text node touched by the range, in document order. */
@@ -188,6 +255,11 @@ if (!window.__larynx) {
   window.__larynx = state;
 
   state.cleanup = () => {
+    if (catchUpTimer !== null) {
+      clearTimeout(catchUpTimer);
+      catchUpTimer = null;
+    }
+    currentIndex = -1;
     if (state.wordSpans.length > 0) {
       unwrap(state.wordSpans);
       state.wordSpans = [];

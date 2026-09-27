@@ -8,6 +8,7 @@ import { splitIntoSentences, estimateDuration } from '../shared/text-utils';
 import {
   OffscreenMessage,
   OffscreenResponse,
+  RunStampedMessage,
   SpeakRequest,
   SpeechStatus,
   VoiceInfo,
@@ -26,19 +27,12 @@ const OFFSCREEN_MESSAGE_TYPES = new Set<OffscreenMessage['type']>([
   'GET_STATUS',
 ]);
 
-const WORD_TICK_MS = 30;
-const MIN_WORD_INTERVAL_MS = 60;
+const PUMP_TICK_MS = 16;
+const MIN_WORD_INTERVAL_MS = 55;
+const CATCHUP_STEP_MS = 20;
 const CLAUSE_GAP_MS = 180;
 const RESTART_WAIT_MS = 2000;
-
-interface WordTicker {
-  sentenceIndex: number;
-  words: string[];
-  base: number;
-  local: number;
-  nextAt: number;
-  intervalMs: number;
-}
+const RESUME_DELAY_MS = 120;
 
 let currentUtterance: SpeechSynthesisUtterance | null = null;
 let sentenceQueue: string[] = [];
@@ -47,8 +41,27 @@ let wordOffset = 0;
 let isProcessing = false;
 let stopRequested = false;
 let isPaused = false;
-let wordTicker: ReturnType<typeof setInterval> | null = null;
-let ticker: WordTicker | null = null;
+
+/**
+ * The pump belonging to the utterance that is currently speaking. Only used to
+ * re-base its clock after a pause; advancing the cursor lives in `speakUtterance`.
+ */
+let activePump: { rearm: () => void } | null = null;
+
+function clearActivePump(): void {
+  activePump = null;
+}
+
+/**
+ * The run whose messages are currently being emitted.
+ *
+ * A new read never begins instantly: `startSpeak` first waits for the previous
+ * run to unwind, and that run reports `SPEAKING_ENDED` on its way out. Because
+ * `activeRunId` is only advanced *after* that wait, the outgoing teardown still
+ * carries the old run's stamp, and the background worker can recognise it as
+ * superseded instead of applying it to the new read's page.
+ */
+let activeRunId = 0;
 let currentSettings: TTSSettings = {
   voice: '',
   rate: 1.0,
@@ -63,6 +76,14 @@ function delay(ms: number): Promise<void> {
 function send(message: OffscreenResponse): void {
   // Promise form: swallows "no receiving end" instead of logging an unchecked lastError.
   chrome.runtime.sendMessage(message).catch(() => {});
+}
+
+/**
+ * Emits a message attributed to `activeRunId`. Every speech event goes through
+ * here so the background worker can drop anything belonging to a superseded run.
+ */
+function sendRunStamped(message: RunStampedMessage): void {
+  send({ ...message, runId: activeRunId });
 }
 
 function getVoices(): VoiceInfo[] {
@@ -92,69 +113,6 @@ function getStatus(): SpeechStatus {
     speaking: isProcessing || Boolean(synth && synth.speaking),
     paused: isPaused,
   };
-}
-
-/* ------------------------------------------------------------------ *
- * Word progress ticker
- *
- * Timing is tracked against absolute wall-clock deadlines, so pausing simply
- * freezes advancement and resuming picks up exactly where it left off.
- * ------------------------------------------------------------------ */
-
-function stopWordTicker(): void {
-  if (wordTicker) {
-    clearInterval(wordTicker);
-    wordTicker = null;
-  }
-  ticker = null;
-}
-
-function tickWords(): void {
-  if (isPaused || !ticker) return;
-  const now = Date.now();
-  while (ticker.local < ticker.words.length && now >= ticker.nextAt) {
-    const { sentenceIndex, words, base, local, intervalMs } = ticker;
-    send({
-      type: 'WORD_PROGRESS',
-      payload: { wordIndex: base + local, sentenceIndex, wordText: words[local] },
-    });
-    ticker.local = local + 1;
-    ticker.nextAt += intervalMs;
-  }
-}
-
-function startWordTicker(
-  sentenceIndex: number,
-  words: string[],
-  base: number,
-  rate: number,
-): void {
-  const estimated = estimateDuration(words.join(' '), rate);
-  const intervalMs = words.length > 0
-    ? Math.max(MIN_WORD_INTERVAL_MS, estimated / words.length)
-    : 150;
-
-  ticker = {
-    sentenceIndex,
-    words,
-    base,
-    local: 0,
-    nextAt: Date.now() + intervalMs,
-    intervalMs,
-  };
-
-  if (!wordTicker) {
-    wordTicker = setInterval(tickWords, WORD_TICK_MS);
-  }
-}
-
-/** Re-arms the ticker after a pause without fast-forwarding through unread words. */
-function resumeWordTicker(): void {
-  if (!ticker) return;
-  ticker.nextAt = Date.now() + ticker.intervalMs;
-  if (!wordTicker) {
-    wordTicker = setInterval(tickWords, WORD_TICK_MS);
-  }
 }
 
 /* ------------------------------------------------------------------ *
@@ -222,44 +180,139 @@ function speakUtterance(
     utterance.volume = 1.0;
 
     const { words, offsets } = tokenizeWithOffsets(text);
-    // Chrome fires `boundary` with a real charIndex; the ticker is only a
-    // fallback for engines that never do.
-    let sawBoundary = false;
+
+    /* -------------------------------------------------------------- *
+     * Word sequencer
+     *
+     * A single monotonic cursor (`emitted`) owns word progress. `boundary`
+     * events never move the cursor directly — they only push the clock
+     * forwards or backwards. That is what makes skipping impossible:
+     * every word is emitted exactly once, in order, no matter how late,
+     * sparse or bursty the engine's boundary events turn out to be.
+     *
+     * `charsPerMs` is learned from the gaps between consecutive boundary
+     * events, so the interval used between sparse events converges on the
+     * real speaking rate instead of a fixed guess.
+     * -------------------------------------------------------------- */
+    let emitted = -1;
+    let nextAt = 0;
+    let stepMs = 0;
+    let charsPerMs = 0;
+    let hint = 0;
+    let lastBoundaryAt = 0;
+    let lastBoundaryIndex = 0;
+    let handle: ReturnType<typeof setInterval> | null = null;
 
     const emit = (local: number) => {
       if (local < 0 || local >= words.length) return;
-      send({
+      sendRunStamped({
         type: 'WORD_PROGRESS',
         payload: { wordIndex: base + local, sentenceIndex, wordText: words[local] },
       });
     };
 
+    /** Milliseconds to hold the cursor at word `i`. */
+    const paceFor = (i: number): number => {
+      const word = words[i] || '';
+      if (charsPerMs > 0) {
+        return Math.max(MIN_WORD_INTERVAL_MS, (word.length + 1) / charsPerMs);
+      }
+      return Math.max(
+        MIN_WORD_INTERVAL_MS,
+        estimateDuration(`${word} `, settings.rate) * 1000,
+      );
+    };
+
+    const stop = () => {
+      if (handle !== null) {
+        clearInterval(handle);
+        handle = null;
+      }
+      activePump = null;
+    };
+
+    const pump = () => {
+      if (isPaused) return;
+      if (emitted >= words.length - 1) {
+        stop();
+        return;
+      }
+      const now = Date.now();
+      if (now < nextAt) return;
+
+      emitted++;
+      emit(emitted);
+
+      // Far behind the engine's own signal: sprint forward, but still one word
+      // per step, so nothing is skipped and nothing is highlighted twice.
+      const behind = hint - 1 - emitted;
+      stepMs = behind > 2 ? CATCHUP_STEP_MS : paceFor(emitted);
+      nextAt = now + stepMs;
+    };
+
     utterance.onstart = () => {
-      send({ type: 'SPEAKING_STARTED', payload: { sentenceIndex } });
-      startWordTicker(sentenceIndex, words, base, settings.rate);
+      sendRunStamped({ type: 'SPEAKING_STARTED', payload: { sentenceIndex } });
+      emitted = -1;
+      stepMs = paceFor(0);
+      nextAt = Date.now() + stepMs;
+      hint = 1;
+      handle = setInterval(pump, PUMP_TICK_MS);
+      activePump = {
+        rearm: () => {
+          nextAt = Date.now() + RESUME_DELAY_MS;
+        },
+      };
     };
 
     utterance.onboundary = (event) => {
       const charIndex = (event as SpeechSynthesisEvent).charIndex;
       if (typeof charIndex !== 'number' || offsets.length === 0) return;
-      // Ground truth arrived, so the estimate would only fight it.
-      if (!sawBoundary) {
-        sawBoundary = true;
-        stopWordTicker();
+
+      const i = wordIndexAt(offsets, charIndex);
+      const now = Date.now();
+
+      // Learn the real speaking rate from the gap since the previous boundary.
+      // Pauses are self-correcting here: the frozen interval simply produces a
+      // low average, and the next few boundaries pull it back up.
+      const deltaChars = charIndex - lastBoundaryIndex;
+      const deltaMs = now - lastBoundaryAt;
+      if (lastBoundaryAt > 0 && deltaChars > 0 && deltaMs > 20) {
+        charsPerMs = deltaChars / deltaMs;
       }
-      emit(wordIndexAt(offsets, charIndex));
+      lastBoundaryAt = now;
+      lastBoundaryIndex = charIndex;
+
+      if (i > hint - 1) hint = i + 1;
+
+      if (handle === null) return;
+
+      if (emitted >= i) {
+        // We over-ran the engine: give the surplus words their time back.
+        nextAt = now + (emitted - i + 1) * paceFor(i);
+      } else {
+        // We are behind: the next word goes out as soon as the engine reaches it.
+        nextAt = now;
+        stepMs = paceFor(emitted + 1);
+      }
+    };
+
+    /** Emits any word the engine never reached, so the tail is never left dark. */
+    const flush = () => {
+      while (emitted < words.length - 1) {
+        emitted++;
+        emit(emitted);
+      }
     };
 
     utterance.onend = () => {
-      stopWordTicker();
+      stop();
       currentUtterance = null;
-      // The final word gets no boundary event of its own.
-      if (sawBoundary) emit(words.length - 1);
+      flush();
       resolve(words.length);
     };
 
     utterance.onerror = (event) => {
-      stopWordTicker();
+      stop();
       currentUtterance = null;
       const reason = event.error || 'unknown';
       // cancel()/pause() churn is an expected control-flow path, not a failure.
@@ -307,6 +360,11 @@ async function startSpeak(request: SpeakRequest): Promise<void> {
 
   window.speechSynthesis.cancel();
 
+  // Only now is the previous run fully unwound, so it is safe to take ownership
+  // of the run stamp: anything the old run still emits was sent before this
+  // point and keeps the old stamp.
+  activeRunId = request.runId;
+
   currentSettings = { ...currentSettings, ...request.settings };
   currentSentenceIndex = 0;
   wordOffset = 0;
@@ -315,8 +373,8 @@ async function startSpeak(request: SpeakRequest): Promise<void> {
   sentenceQueue = splitIntoSentences(request.text);
 
   if (sentenceQueue.length === 0) {
-    send({ type: 'ERROR', payload: 'No valid sentences' });
-    send({ type: 'SPEAKING_ENDED' });
+    sendRunStamped({ type: 'ERROR', payload: 'No valid sentences' });
+    sendRunStamped({ type: 'SPEAKING_ENDED' });
     return;
   }
 
@@ -327,7 +385,7 @@ async function startSpeak(request: SpeakRequest): Promise<void> {
       const sentence = sentenceQueue.shift()!;
       const sentenceIndex = currentSentenceIndex;
 
-      send({
+      sendRunStamped({
         type: 'SENTENCE_START',
         payload: { sentenceIndex, sentenceText: sentence },
       });
@@ -348,18 +406,18 @@ async function startSpeak(request: SpeakRequest): Promise<void> {
     }
   } catch (error) {
     console.error('[Larynx Offscreen] Speech error:', error);
-    send({ type: 'ERROR', payload: (error as Error).message });
+    sendRunStamped({ type: 'ERROR', payload: (error as Error).message });
   } finally {
     isProcessing = false;
-    stopWordTicker();
-    send({ type: 'SPEAKING_ENDED' });
+    clearActivePump();
+    sendRunStamped({ type: 'SPEAKING_ENDED' });
   }
 }
 
 function stopSpeech(): void {
   stopRequested = true;
   window.speechSynthesis.cancel();
-  stopWordTicker();
+  clearActivePump();
   sentenceQueue = [];
   isPaused = false;
   currentUtterance = null;
@@ -400,7 +458,7 @@ chrome.runtime.onMessage.addListener((message: OffscreenMessage, _sender, sendRe
           if (isPaused) {
             window.speechSynthesis.resume();
             isPaused = false;
-            resumeWordTicker();
+            activePump?.rearm();
           }
           sendResponse({ success: true });
           break;
@@ -453,7 +511,7 @@ chrome.runtime.onMessage.addListener((message: OffscreenMessage, _sender, sendRe
         }
       }
     } catch (error) {
-      send({ type: 'ERROR', payload: (error as Error).message });
+      sendRunStamped({ type: 'ERROR', payload: (error as Error).message });
       sendResponse({ success: false, error: (error as Error).message });
     }
   })();
