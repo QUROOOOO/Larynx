@@ -27,6 +27,7 @@ export interface SpeakResponse {
 }
 
 export type OffscreenMessage =
+  | { type: 'PING' }
   | { type: 'SPEAK'; payload: SpeakRequest }
   | { type: 'PAUSE' }
   | { type: 'RESUME' }
@@ -39,27 +40,22 @@ export type WordProgressPayload = { wordIndex: number; sentenceIndex: number; wo
 export type SentenceProgressPayload = { sentenceIndex: number; sentenceText: string };
 
 export type OffscreenResponse =
+  | { type: 'PONG' }
   | { type: 'VOICES_LIST'; payload: VoiceInfo[] }
   | { type: 'SPEAKING_STARTED'; payload: { sentenceIndex: number } }
   | { type: 'WORD_PROGRESS'; payload: WordProgressPayload }
-  | { type: 'SENTENCE_START'; payload: { index: number; text: string } }
+  | { type: 'SENTENCE_START'; payload: SentenceProgressPayload }
   | { type: 'SPEAKING_ENDED' }
   | { type: 'ERROR'; payload: string };
 
 export type ContentMessage =
-  | { type: 'SELECTION'; payload: { text: string; rect: DOMRect } }
-  | { type: 'SENTENCE_PROGRESS'; payload: SentenceProgressPayload }
+  | { type: 'SELECTION'; payload: { text: string; rect: DOMRect | null } }
   | { type: 'WORD_PROGRESS'; payload: WordProgressPayload }
+  | { type: 'SPEAK_ENDED' }
+  | { type: 'SPEAK_ERROR'; payload: { error: string } }
   | { type: 'SETTINGS_CHANGED'; payload: Partial<TTSSettings> };
 
-export type BackgroundMessage =
-  | { type: 'INJECT_CONTENT_SCRIPT'; payload: { tabId: number } }
-  | { type: 'GET_SETTINGS' }
-  | { type: 'UPDATE_SETTINGS'; payload: Partial<TTSSettings> };
-
-export interface StoredSettings extends TTSSettings {
-  shortcut?: string;
-}
+export type StoredSettings = TTSSettings;
 
 export const DEFAULT_SETTINGS: TTSSettings = {
   voice: '',

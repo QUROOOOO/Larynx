@@ -64,15 +64,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
         sendResponse({ success: true });
       } else if (message.type === 'SETTINGS_CHANGED') {
-        await getSettings();
         sendResponse({ success: true });
       } else if (message.type === 'SENTENCE_START') {
-        if (message.payload?.index !== undefined && currentTabId !== null) {
-          await notifyContent({
-            type: 'SENTENCE_PROGRESS',
-            payload: { sentenceIndex: message.payload.index, sentenceText: message.payload.text },
-          });
-        }
         sendResponse({ success: true });
       } else if (message.type === 'WORD_PROGRESS') {
         if (currentTabId !== null) {
@@ -85,10 +78,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       } else if (message.type === 'SPEAKING_STARTED') {
         sendResponse({ success: true });
       } else if (message.type === 'SPEAKING_ENDED') {
+        await notifyContent({ type: 'SPEAK_ENDED' });
         resetOffscreenIdleTimer();
         sendResponse({ success: true });
       } else if (message.type === 'ERROR') {
         console.error('[Larynx] Speech error:', message.payload);
+        await notifyContent({ type: 'SPEAK_ERROR', payload: { error: String(message.payload) } });
         resetOffscreenIdleTimer();
         sendResponse({ success: false, error: String(message.payload) });
       } else {

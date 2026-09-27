@@ -1,41 +1,170 @@
-// Offscreen Document — Web Speech API TTS Engine with word-level progress
+// Offscreen Document — Web Speech API TTS engine with word-level progress
+//
+// Owns `window.speechSynthesis` for the whole extension. Emits a global word index
+// (not per-sentence) so the content script can highlight against its flat list of
+// word spans without having to re-split the text itself.
 
-import { splitIntoSentences } from '../shared/text-utils';
-import { OffscreenMessage, OffscreenResponse, VoiceInfo, TTSSettings } from '../shared/types';
+import { splitIntoSentences, estimateDuration } from '../shared/text-utils';
+import {
+  OffscreenMessage,
+  OffscreenResponse,
+  SpeakRequest,
+  VoiceInfo,
+  TTSSettings,
+} from '../shared/types';
+
+const OFFSCREEN_MESSAGE_TYPES = new Set<OffscreenMessage['type']>([
+  'PING',
+  'SPEAK',
+  'PAUSE',
+  'RESUME',
+  'STOP',
+  'SET_RATE',
+  'SET_VOICE',
+  'GET_VOICES',
+]);
+
+const WORD_TICK_MS = 30;
+const MIN_WORD_INTERVAL_MS = 60;
+const CLAUSE_GAP_MS = 180;
+const RESTART_WAIT_MS = 2000;
+
+interface WordTicker {
+  sentenceIndex: number;
+  words: string[];
+  base: number;
+  local: number;
+  nextAt: number;
+  intervalMs: number;
+}
 
 let currentUtterance: SpeechSynthesisUtterance | null = null;
 let sentenceQueue: string[] = [];
 let currentSentenceIndex = 0;
-let currentSettings: TTSSettings = { voice: '', rate: 1.0, pauseOnPunctuation: true, sentenceGap: 300 };
+let wordOffset = 0;
+let isProcessing = false;
+let stopRequested = false;
 let isPaused = false;
-let wordTimer: ReturnType<typeof setInterval> | null = null;
+let wordTicker: ReturnType<typeof setInterval> | null = null;
+let ticker: WordTicker | null = null;
+let currentSettings: TTSSettings = {
+  voice: '',
+  rate: 1.0,
+  pauseOnPunctuation: true,
+  sentenceGap: 300,
+};
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function send(message: OffscreenResponse): void {
+  // Promise form: swallows "no receiving end" instead of logging an unchecked lastError.
+  chrome.runtime.sendMessage(message).catch(() => {});
+}
 
 function getVoices(): VoiceInfo[] {
   if (!window.speechSynthesis) return [];
   const voices = window.speechSynthesis.getVoices();
   const naturalKeywords = ['neural', 'enhanced', 'premium', 'google', 'microsoft', 'apple', 'wave'];
-  return voices.map(v => ({
+  return voices.map((v) => ({
     name: v.name,
     lang: v.lang,
     voiceURI: v.voiceURI,
     localService: v.localService,
-    isNatural: naturalKeywords.some(k => v.name.toLowerCase().includes(k) || v.voiceURI.toLowerCase().includes(k)),
+    isNatural: naturalKeywords.some(
+      (k) => v.name.toLowerCase().includes(k) || v.voiceURI.toLowerCase().includes(k),
+    ),
   }));
 }
 
 function findVoice(voiceURI: string): SpeechSynthesisVoice | null {
-  const voices = window.speechSynthesis.getVoices();
-  return voices.find(v => v.voiceURI === voiceURI) || null;
+  if (!window.speechSynthesis || !voiceURI) return null;
+  return window.speechSynthesis.getVoices().find((v) => v.voiceURI === voiceURI) || null;
 }
 
-function clearWordTimer() {
-  if (wordTimer) {
-    clearInterval(wordTimer);
-    wordTimer = null;
+/* ------------------------------------------------------------------ *
+ * Word progress ticker
+ *
+ * Timing is tracked against absolute wall-clock deadlines, so pausing simply
+ * freezes advancement and resuming picks up exactly where it left off.
+ * ------------------------------------------------------------------ */
+
+function stopWordTicker(): void {
+  if (wordTicker) {
+    clearInterval(wordTicker);
+    wordTicker = null;
+  }
+  ticker = null;
+}
+
+function tickWords(): void {
+  if (isPaused || !ticker) return;
+  const now = Date.now();
+  while (ticker.local < ticker.words.length && now >= ticker.nextAt) {
+    const { sentenceIndex, words, base, local, intervalMs } = ticker;
+    send({
+      type: 'WORD_PROGRESS',
+      payload: { wordIndex: base + local, sentenceIndex, wordText: words[local] },
+    });
+    ticker.local = local + 1;
+    ticker.nextAt += intervalMs;
   }
 }
 
-function speakSentence(text: string, settings: TTSSettings, sentenceIndex: number): Promise<void> {
+function startWordTicker(
+  sentenceIndex: number,
+  words: string[],
+  base: number,
+  rate: number,
+): void {
+  const estimated = estimateDuration(words.join(' '), rate);
+  const intervalMs = words.length > 0
+    ? Math.max(MIN_WORD_INTERVAL_MS, estimated / words.length)
+    : 150;
+
+  ticker = {
+    sentenceIndex,
+    words,
+    base,
+    local: 0,
+    nextAt: Date.now() + intervalMs,
+    intervalMs,
+  };
+
+  if (!wordTicker) {
+    wordTicker = setInterval(tickWords, WORD_TICK_MS);
+  }
+}
+
+/** Re-arms the ticker after a pause without fast-forwarding through unread words. */
+function resumeWordTicker(): void {
+  if (!ticker) return;
+  ticker.nextAt = Date.now() + ticker.intervalMs;
+  if (!wordTicker) {
+    wordTicker = setInterval(tickWords, WORD_TICK_MS);
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Speech
+ * ------------------------------------------------------------------ */
+
+function splitClauses(text: string, pauseOnPunctuation: boolean): string[] {
+  if (!pauseOnPunctuation) return [text];
+  const clauses = text
+    .split(/(?<=[,;:])\s+/)
+    .map((c) => c.trim())
+    .filter(Boolean);
+  return clauses.length > 0 ? clauses : [text];
+}
+
+function speakUtterance(
+  text: string,
+  settings: TTSSettings,
+  sentenceIndex: number,
+  base: number,
+): Promise<number> {
   return new Promise((resolve, reject) => {
     if (!window.speechSynthesis) {
       reject(new Error('Speech Synthesis not available'));
@@ -44,103 +173,152 @@ function speakSentence(text: string, settings: TTSSettings, sentenceIndex: numbe
 
     const utterance = new SpeechSynthesisUtterance(text);
     currentUtterance = utterance;
-    const voice = settings.voice ? findVoice(settings.voice) : null;
+
+    const voice = findVoice(settings.voice);
     if (voice) utterance.voice = voice;
     utterance.rate = settings.rate;
     utterance.pitch = 1.0;
     utterance.volume = 1.0;
 
-    const words = text.split(/\s+/).filter(w => w.length > 0);
-    const wordCount = words.length;
-    const charsPerSecond = 12.5 * settings.rate;
-    const estimatedDurationMs = wordCount > 0 ? (text.length / charsPerSecond) * 1000 : 500;
-    const wordInterval = wordCount > 0 ? Math.max(60, estimatedDurationMs / wordCount) : 150;
-    let wordIndex = 0;
+    const words = text.split(/\s+/).filter((w) => w.length > 0);
 
     utterance.onstart = () => {
-      chrome.runtime.sendMessage({
-        type: 'SPEAKING_STARTED',
-        payload: { sentenceIndex },
-      } as OffscreenResponse);
-
-      // Emit word-level progress at regular intervals
-      wordTimer = setInterval(() => {
-        if (wordIndex < wordCount && !isPaused) {
-          chrome.runtime.sendMessage({
-            type: 'WORD_PROGRESS',
-            payload: { wordIndex, sentenceIndex, wordText: words[wordIndex] },
-          } as OffscreenResponse);
-          wordIndex++;
-        }
-        if (wordIndex >= wordCount) clearWordTimer();
-      }, wordInterval);
+      send({ type: 'SPEAKING_STARTED', payload: { sentenceIndex } });
+      startWordTicker(sentenceIndex, words, base, settings.rate);
     };
 
     utterance.onend = () => {
-      clearWordTimer();
+      stopWordTicker();
       currentUtterance = null;
-      resolve();
+      resolve(words.length);
     };
 
-    utterance.onerror = (e) => {
-      clearWordTimer();
+    utterance.onerror = (event) => {
+      stopWordTicker();
       currentUtterance = null;
-      reject(new Error(e.error));
+      const reason = event.error || 'unknown';
+      // cancel()/pause() churn is an expected control-flow path, not a failure.
+      if (stopRequested || reason === 'canceled' || reason === 'interrupted') {
+        resolve(words.length);
+        return;
+      }
+      reject(new Error(reason));
     };
 
     window.speechSynthesis.speak(utterance);
   });
 }
 
-async function processQueue() {
-  while (sentenceQueue.length > 0 && !isPaused) {
-    const sentence = sentenceQueue.shift()!;
+/** Speaks one sentence, clause by clause, honouring `pauseOnPunctuation`. */
+async function speakSentence(
+  text: string,
+  settings: TTSSettings,
+  sentenceIndex: number,
+  base: number,
+): Promise<number> {
+  const clauses = splitClauses(text, settings.pauseOnPunctuation);
+  let spoken = 0;
 
-    chrome.runtime.sendMessage({
-      type: 'SENTENCE_START',
-      payload: { index: currentSentenceIndex, text: sentence },
-    } as OffscreenResponse);
-
-    try {
-      await speakSentence(sentence, currentSettings, currentSentenceIndex);
-      currentSentenceIndex++;
-      // Pause between sentences for natural pacing
-      if (currentSettings.sentenceGap > 0 && sentenceQueue.length > 0) {
-        await new Promise(r => setTimeout(r, currentSettings.sentenceGap));
-      }
-    } catch (error) {
-      console.error('[Larynx Offscreen] Speech error:', error);
-      chrome.runtime.sendMessage({
-        type: 'ERROR',
-        payload: (error as Error).message,
-      } as OffscreenResponse);
-      break;
+  for (let i = 0; i < clauses.length; i++) {
+    spoken += await speakUtterance(clauses[i], settings, sentenceIndex, base + spoken);
+    if (stopRequested) break;
+    if (i < clauses.length - 1 && !isPaused) {
+      await delay(CLAUSE_GAP_MS);
     }
   }
 
+  return spoken;
+}
+
+async function startSpeak(request: SpeakRequest): Promise<void> {
+  if (isProcessing) {
+    stopRequested = true;
+    window.speechSynthesis.cancel();
+    const deadline = Date.now() + RESTART_WAIT_MS;
+    while (isProcessing && Date.now() < deadline) {
+      await delay(20);
+    }
+  }
+
+  window.speechSynthesis.cancel();
+
+  currentSettings = { ...currentSettings, ...request.settings };
+  currentSentenceIndex = 0;
+  wordOffset = 0;
+  isPaused = false;
+  stopRequested = false;
+  sentenceQueue = splitIntoSentences(request.text);
+
   if (sentenceQueue.length === 0) {
-    chrome.runtime.sendMessage({ type: 'SPEAKING_ENDED' } as OffscreenResponse);
+    send({ type: 'ERROR', payload: 'No valid sentences' });
+    send({ type: 'SPEAKING_ENDED' });
+    return;
+  }
+
+  isProcessing = true;
+
+  try {
+    while (sentenceQueue.length > 0 && !stopRequested) {
+      const sentence = sentenceQueue.shift()!;
+      const sentenceIndex = currentSentenceIndex;
+
+      send({
+        type: 'SENTENCE_START',
+        payload: { sentenceIndex, sentenceText: sentence },
+      });
+
+      const spoken = await speakSentence(
+        sentence,
+        currentSettings,
+        sentenceIndex,
+        wordOffset,
+      );
+      wordOffset += spoken;
+      currentSentenceIndex++;
+
+      if (stopRequested) break;
+      if (currentSettings.sentenceGap > 0 && sentenceQueue.length > 0) {
+        await delay(currentSettings.sentenceGap);
+      }
+    }
+  } catch (error) {
+    console.error('[Larynx Offscreen] Speech error:', error);
+    send({ type: 'ERROR', payload: (error as Error).message });
+  } finally {
+    isProcessing = false;
+    stopWordTicker();
+    send({ type: 'SPEAKING_ENDED' });
   }
 }
 
+function stopSpeech(): void {
+  stopRequested = true;
+  window.speechSynthesis.cancel();
+  stopWordTicker();
+  sentenceQueue = [];
+  isPaused = false;
+  currentUtterance = null;
+}
+
+/* ------------------------------------------------------------------ *
+ * Messaging
+ * ------------------------------------------------------------------ */
+
 chrome.runtime.onMessage.addListener((message: OffscreenMessage, _sender, sendResponse) => {
+  // Ignore traffic meant for the background worker or the content script.
+  if (!message || !OFFSCREEN_MESSAGE_TYPES.has(message.type)) return false;
+
   (async () => {
     try {
       switch (message.type) {
+        case 'PING': {
+          sendResponse({ type: 'PONG' });
+          break;
+        }
+
         case 'SPEAK': {
-          const { text, settings } = message.payload;
-          currentSettings = { ...currentSettings, ...settings };
-          isPaused = false;
-          currentSentenceIndex = 0;
-          sentenceQueue = splitIntoSentences(text);
-
-          if (sentenceQueue.length === 0) {
-            sendResponse({ success: false, error: 'No valid sentences' });
-            return;
-          }
-
           sendResponse({ success: true });
-          await processQueue();
+          void startSpeak(message.payload);
           break;
         }
 
@@ -148,32 +326,23 @@ chrome.runtime.onMessage.addListener((message: OffscreenMessage, _sender, sendRe
           if (window.speechSynthesis.speaking && !window.speechSynthesis.paused) {
             window.speechSynthesis.pause();
             isPaused = true;
-            clearWordTimer();
-          } else if (window.speechSynthesis.paused) {
-            window.speechSynthesis.resume();
-            isPaused = false;
-            await processQueue();
           }
           sendResponse({ success: true });
           break;
         }
 
         case 'RESUME': {
-          if (window.speechSynthesis.paused) {
+          if (isPaused) {
             window.speechSynthesis.resume();
             isPaused = false;
-            await processQueue();
+            resumeWordTicker();
           }
           sendResponse({ success: true });
           break;
         }
 
         case 'STOP': {
-          window.speechSynthesis.cancel();
-          clearWordTimer();
-          sentenceQueue = [];
-          isPaused = false;
-          currentUtterance = null;
+          stopSpeech();
           sendResponse({ success: true });
           break;
         }
@@ -198,8 +367,10 @@ chrome.runtime.onMessage.addListener((message: OffscreenMessage, _sender, sendRe
         case 'GET_VOICES': {
           let voices = getVoices();
           if (voices.length === 0) {
-            await new Promise<void>(resolve => {
+            await new Promise<void>((resolve) => {
+              const timer = setTimeout(resolve, 1000);
               const handler = () => {
+                clearTimeout(timer);
                 window.speechSynthesis.removeEventListener('voiceschanged', handler);
                 resolve();
               };
@@ -207,15 +378,13 @@ chrome.runtime.onMessage.addListener((message: OffscreenMessage, _sender, sendRe
             });
             voices = getVoices();
           }
-          sendResponse({ type: 'VOICES_LIST', payload: voices } as OffscreenResponse);
+          sendResponse({ type: 'VOICES_LIST', payload: voices });
           break;
         }
       }
     } catch (error) {
-      sendResponse({
-        type: 'ERROR',
-        payload: (error as Error).message,
-      } as OffscreenResponse);
+      send({ type: 'ERROR', payload: (error as Error).message });
+      sendResponse({ success: false, error: (error as Error).message });
     }
   })();
 
@@ -223,9 +392,3 @@ chrome.runtime.onMessage.addListener((message: OffscreenMessage, _sender, sendRe
 });
 
 console.log('[Larynx Offscreen] Loaded');
-
-if (window.speechSynthesis.getVoices().length === 0) {
-  window.speechSynthesis.addEventListener('voiceschanged', () => {
-    console.log('[Larynx Offscreen] Voices loaded');
-  });
-}
