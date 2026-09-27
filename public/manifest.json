@@ -1,6 +1,6 @@
 {
   "name": "Larynx",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Select any text on the web, hear it in a natural voice — instantly.",
   "manifest_version": 3,
   "permissions": [
@@ -31,11 +31,5 @@
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
-  },
-  "web_accessible_resources": [
-    {
-      "resources": ["pill.js", "pill.css"],
-      "matches": ["<all_urls>"]
-    }
-  ]
+  }
 }
