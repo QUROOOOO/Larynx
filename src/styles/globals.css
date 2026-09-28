@@ -4,10 +4,16 @@
 @source "../content/**/*.{ts,tsx}";
 
 @theme {
-  --color-accent: #00FF87;
-  --color-accent-dim: rgba(0, 255, 135, 0.15);
+  --color-accent: #FF5C29;
+  --color-accent-dim: rgba(255, 92, 41, 0.15);
+  --color-ink: #0B0B0C;
+  --color-ink-raised: #232327;
+  --color-paper: #EDEAE4;
+  --color-paper-muted: #9B968C;
+  --color-rule: #34343A;
   --font-mono: "JetBrains Mono", "Fira Code", monospace;
   --font-sans: "IBM Plex Sans", system-ui, sans-serif;
+  --font-serif: "Instrument Serif", Georgia, serif;
 
   --animate-spring-in: springIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
   --animate-spring-out: springOut 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
@@ -53,14 +59,6 @@
 
   ::selection {
     @apply bg-accent/30 text-gray-900 dark:text-gray-100;
-  }
-
-  .larynx-word {
-    @apply rounded px-0.5 transition-colors duration-75;
-  }
-
-  .larynx-word-active {
-    @apply bg-accent/40;
   }
 }
 

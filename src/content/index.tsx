@@ -3,6 +3,7 @@
 // Captures the selection, wraps it in per-word spans, and highlights as speech progresses.
 // Safe to inject multiple times: persistent state lives on window.
 
+import { prepareSpeech } from '../shared/text-utils';
 import type { ContentMessage } from '../shared/types';
 
 const WORD_CLASS = 'larynx-word';
@@ -24,6 +25,12 @@ interface ContentState {
   wordSpans: HTMLElement[];
   /** Every span this script injected, so cleanup can restore the page exactly. */
   injected: HTMLElement[];
+  /**
+   * Bridges the two texts. The engine speaks the normalized plan while the
+   * page shows the original selection, so a spoken index only means anything
+   * once it is translated through this map back to a `wordSpans` index.
+   */
+  spokenToSource: number[];
   lastText: string;
   run: () => void;
   cleanup: () => void;
@@ -39,19 +46,25 @@ declare global {
  * The extension's own stylesheet is only bundled into the options page, so the
  * highlight rules have to be injected into whichever host page is being read.
  *
- * The highlight is a plain rectangle produced by a *negative colour* blend:
- * `mix-blend-mode: difference` against a white fill inverts whatever the host
- * page has painted underneath, glyphs included. That is what keeps the current
- * word readable on any background — a page that is already light turns the
- * block dark, a page that is already dark turns it light, and mid-tones keep
+ * At rest the spans are completely invisible. They have to be styled anyway —
+ * they are real elements sitting in the middle of the host page's text — and
+ * anything left behind shows up as a visible reflow artefact, so every property
+ * that could paint is pinned to its no-op value. What survives is
+ * `box-decoration-break`, which is inherited behaviour rather than decoration,
+ * and the `::selection` override below.
+ *
+ * The highlight itself is a plain rectangle produced by a *negative colour*
+ * blend: `mix-blend-mode: difference` against a white fill inverts whatever the
+ * host page has painted underneath, glyphs included. That is what keeps the
+ * current word readable on any background — a page that is already light turns
+ * the block dark, a page that is already dark turns it light, and mid-tones keep
  * exactly the contrast they started with. Nothing about the block is themed, so
  * no host-page colour can hide it.
  *
- * `opacity` is the one knob that matters here, and it has a hard floor. A blend
- * at `opacity: a` leaves `(2a - 1)` of the original contrast behind, so anything
- * at or below 0.5 collapses the word into its own background and the highlight
- * silently disappears. The resting range therefore sits at 0.7 (light but
- * unmistakable) and the active word at 0.9 (near-full inversion).
+ * Only the active word is ever painted, and it is always at `opacity: 1`. The
+ * inversion is the whole signal: there is no dimmed "already read" state
+ * competing with it, so the eye is never asked to weigh two levels of emphasis
+ * at once.
  *
  * The separators between words are injected as `larynx-gap` spans rather than
  * left as bare text nodes, because `::selection` can only be neutralised on
@@ -69,7 +82,7 @@ function ensureStyles(): void {
   style.textContent = `
     .${WORD_CLASS},
     .${GAP_CLASS} {
-      background-color: #fff !important;
+      background-color: transparent !important;
       background-image: none !important;
       box-shadow: none !important;
       outline: none !important;
@@ -79,14 +92,15 @@ function ensureStyles(): void {
       padding: 0 !important;
       margin: 0 !important;
       border-radius: 0 !important;
-      mix-blend-mode: difference !important;
-      opacity: 0.7 !important;
-      transition: opacity .1s linear;
+      mix-blend-mode: normal !important;
+      opacity: 1 !important;
       -webkit-box-decoration-break: clone;
       box-decoration-break: clone;
     }
     .${WORD_CLASS}.${ACTIVE_CLASS} {
-      opacity: 0.9 !important;
+      background-color: #fff !important;
+      mix-blend-mode: difference !important;
+      opacity: 1 !important;
     }
     .${WORD_CLASS}::selection,
     .${GAP_CLASS}::selection {
@@ -112,21 +126,27 @@ function paintWord(spans: HTMLElement[], index: number): void {
 /**
  * Advances the highlight to `index`.
  *
- * The offscreen sequencer already emits every word in order, so this normally
- * just paints the next word. If a future engine change ever delivers an index
- * that jumps ahead, the gap is walked one word at a time so the reader still
- * sees every word pass by — the highlight degrades into a fast catch-up rather
- * than silently dropping words.
+ * Progress arrives in order, so the common case is simply the next word. Three
+ * edge cases are handled explicitly:
+ *
+ * - A repeat of the current index carries no new information, and an index
+ *   *behind* the cursor is stale — a late `WORD_PROGRESS` from a sentence that
+ *   finished after the reader had already moved on. Both are dropped rather than
+ *   painted, because moving the highlight backwards reads as a glitch.
+ * - An index that jumps ahead is walked one word at a time, so the reader still
+ *   sees every word pass by and the highlight degrades into a fast catch-up
+ *   instead of silently skipping text.
  */
 function highlightWord(spans: HTMLElement[], index: number): void {
   if (index < 0 || index >= spans.length) return;
+  if (index <= currentIndex) return;
 
   if (catchUpTimer !== null) {
     clearTimeout(catchUpTimer);
     catchUpTimer = null;
   }
 
-  if (index <= currentIndex + 1) {
+  if (index === currentIndex + 1) {
     paintWord(spans, index);
     return;
   }
@@ -141,6 +161,19 @@ function highlightWord(spans: HTMLElement[], index: number): void {
     }
   };
   step();
+}
+
+/**
+ * Translates a spoken word index into the source word it came from.
+ *
+ * `spokenToSource` is empty before a plan exists, and an out-of-range lookup can
+ * only happen if the engine ever disagrees with the plan about how many words it
+ * produced — in which case there is no honest index to paint, so the update is
+ * dropped instead of guessed at.
+ */
+function sourceIndexFor(state: ContentState, spokenIndex: number): number | undefined {
+  if (state.spokenToSource.length === 0) return spokenIndex;
+  return state.spokenToSource[spokenIndex];
 }
 
 /** Every text node touched by the range, in document order. */
@@ -272,6 +305,7 @@ if (!window.__larynx) {
   const state: ContentState = {
     wordSpans: [],
     injected: [],
+    spokenToSource: [],
     lastText: '',
     run: () => {},
     cleanup: () => {},
@@ -290,6 +324,7 @@ if (!window.__larynx) {
       state.injected = [];
     }
     state.wordSpans = [];
+    state.spokenToSource = [];
     const style = document.getElementById(STYLE_ID);
     if (style?.parentNode) style.parentNode.removeChild(style);
   };
@@ -315,8 +350,15 @@ if (!window.__larynx) {
 
     state.cleanup();
 
+    // The original text is what gets remembered, so pressing the shortcut twice
+    // re-derives an identical plan rather than compounding the first rewrite.
     const activeText = text || state.lastText;
     state.lastText = activeText;
+
+    // The engine reads the cleaned-up plan; the page keeps showing the original
+    // selection, and `spokenToSource` is the only thing tying the two together.
+    const plan = prepareSpeech(activeText);
+    state.spokenToSource = plan.spokenToSource;
 
     if (text) {
       ensureStyles();
@@ -338,7 +380,7 @@ if (!window.__larynx) {
     }
 
     chrome.runtime.sendMessage(
-      { type: 'SELECTION', payload: { text: activeText, rect } },
+      { type: 'SELECTION', payload: { text: plan.text, rect } },
       (response) => {
         if (chrome.runtime.lastError) {
           console.error('[Larynx] Speak request failed:', chrome.runtime.lastError.message);
@@ -356,9 +398,11 @@ if (!window.__larynx) {
 
   chrome.runtime.onMessage.addListener((message: ContentMessage, _sender, sendResponse) => {
     switch (message.type) {
-      case 'WORD_PROGRESS':
-        highlightWord(state.wordSpans, message.payload.wordIndex);
+      case 'WORD_PROGRESS': {
+        const source = sourceIndexFor(state, message.payload.wordIndex);
+        if (source !== undefined) highlightWord(state.wordSpans, source);
         break;
+      }
       case 'SPEAK_ENDED':
         state.cleanup();
         break;
