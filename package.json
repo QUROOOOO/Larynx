@@ -1,6 +1,6 @@
 {
   "name": "larynx",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "private": true,
   "description": "Select any text on the web, hear it in a natural voice — instantly.",
   "type": "module",

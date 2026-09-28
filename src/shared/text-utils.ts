@@ -58,6 +58,17 @@ const SENTENCE_END = /[.!?]+$/;
 const LEAD_PUNCT = /^[^\p{L}\p{N}]*/u;
 const TRAIL_PUNCT = /[^\p{L}\p{N}]*$/u;
 
+/**
+ * Arrows and arrow-like glyphs. They are layout, not language: a page that
+ * renders an inline arrow usually has no whitespace around it, so the glyph
+ * welds to the surrounding words (`optimize allocation→minimize water use`)
+ * and slips past the pure-marks guard. The engine then reads it as "arrow".
+ * These are always excised, even from a mixed token. Only arrow blocks are
+ * stripped — `50%`, `AT&T`, `3×4` and `+5°C` keep their symbols.
+ */
+const ARROW =
+  /[\u2190-\u21FF\u2794-\u27BF\u27F0-\u27FF\u2900-\u297F\u2B95]+/g;
+
 /** Emoji, their modifiers, flags, joiners and the emoji presentation selector. */
 const EMOJI =
   /\p{Extended_Pictographic}|\p{Emoji_Modifier}|\p{Regional_Indicator}|\u200D|\uFE0F/gu;
@@ -249,6 +260,46 @@ export function prepareSpeech(source: string): SpeechPlan {
     spokenToSource.push(sourceIndex);
   };
 
+  /**
+   * Turns one scrubbed token value into its spoken pieces. A token that packs
+   * an arrow (`word→word`) is split so each prose half is spoken and the
+   * glyph itself is excised.
+   */
+  const pronounce = (raw: string, sourceIndex: number): void => {
+    const value = scrubToken(raw);
+    if (!value) return;
+
+    ARROW.lastIndex = 0;
+    if (ARROW.test(value)) {
+      value.split(ARROW).forEach((piece) => pronounce(piece, sourceIndex));
+      return;
+    }
+
+    // Punctuation on its own is layout, not language — except a sentence end,
+    // which the split still needs in order to breathe.
+    if (!/[\p{L}\p{N}]/u.test(value) && !SENTENCE_END.test(value)) return;
+
+    if (SUPERSCRIPT_CITATION.test(value) && !NAMED_REFERENCE.test(value)) return;
+
+    const lead = LEAD_PUNCT.exec(value)?.[0] ?? '';
+    const trail = TRAIL_PUNCT.exec(value)?.[0] ?? '';
+    const core = value.slice(lead.length, value.length - trail.length);
+    const letters = core ? spellOut(core) : null;
+
+    if (!letters || letters.length === 0) {
+      emit(value, sourceIndex);
+      return;
+    }
+
+    const first = lead + letters[0];
+    const last = letters.length === 1 ? first : letters[letters.length - 1] + trail;
+    for (let i = 0; i < letters.length; i += 1) {
+      if (i === 0) emit(first, sourceIndex);
+      else if (i === letters.length - 1) emit(last, sourceIndex);
+      else emit(letters[i], sourceIndex);
+    }
+  };
+
   tokens.forEach((token, index) => {
     let value = token.text;
 
@@ -268,42 +319,14 @@ export function prepareSpeech(source: string): SpeechPlan {
       value = cut + source.slice(cursor, token.end);
     }
 
-    value = scrubToken(value);
-    if (!value) return;
-
-    // Punctuation on its own is layout, not language — except a sentence end,
-    // which the split still needs in order to breathe.
-    if (!/[\p{L}\p{N}]/u.test(value) && !SENTENCE_END.test(value)) return;
-
-    if (SUPERSCRIPT_CITATION.test(value) && !NAMED_REFERENCE.test(value)) return;
-
-    const lead = LEAD_PUNCT.exec(value)?.[0] ?? '';
-    const trail = TRAIL_PUNCT.exec(value)?.[0] ?? '';
-    const core = value.slice(lead.length, value.length - trail.length);
-    const letters = core ? spellOut(core) : null;
-
-    if (!letters || letters.length === 0) {
-      emit(value, index);
-      return;
-    }
-
-    const first = lead + letters[0];
-    const last = letters.length === 1 ? first : letters[letters.length - 1] + trail;
-    for (let i = 0; i < letters.length; i += 1) {
-      if (i === 0) emit(first, index);
-      else if (i === letters.length - 1) emit(last, index);
-      else emit(letters[i], index);
-    }
+    pronounce(value, index);
   });
 
   if (spoken.length === 0) {
-    // Everything was swallowed (a selection that was only links, say). Speaking
-    // the source verbatim beats saying nothing at all, and the identity map
-    // keeps the highlighter honest.
-    return {
-      text: tokens.map(t => t.text).join(' '),
-      spokenToSource: tokens.map((_, i) => i),
-    };
+    // Everything was dropped — a selection of only links, arrows and markup.
+    // Speaking it verbatim would read "arrow", bare URLs and markup residue,
+    // the exact noise the normaliser exists to remove, so say nothing.
+    return { text: '', spokenToSource: [] };
   }
 
   return { text: spoken.join(' '), spokenToSource };

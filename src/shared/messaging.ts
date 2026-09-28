@@ -20,15 +20,24 @@ export function sendToOffscreen(message: OffscreenMessage): Promise<OffscreenRes
   });
 }
 
-export function sendToContentScript(tabId: number, message: ContentMessage): Promise<unknown> {
+export function sendToContentScript(
+  tabId: number,
+  message: ContentMessage,
+  frameId?: number,
+): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    chrome.tabs.sendMessage(tabId, message, (response) => {
+    const handleResponse = (response: unknown) => {
       if (chrome.runtime.lastError) {
         reject(new Error(chrome.runtime.lastError.message));
       } else {
         resolve(response);
       }
-    });
+    };
+    if (frameId !== undefined) {
+      chrome.tabs.sendMessage(tabId, message, { frameId }, handleResponse);
+    } else {
+      chrome.tabs.sendMessage(tabId, message, handleResponse);
+    }
   });
 }
 

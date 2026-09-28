@@ -8,6 +8,9 @@ let currentTabId: number | null = null;
 // The tab that owns the running speech. Progress must be routed here rather than
 // to whichever tab happens to be focused, or the highlight lands on the wrong page.
 let speakingTabId: number | null = null;
+// The frame within that tab that owns the selection. Progress must land on this
+// frame rather than the tab's main frame, or the highlight goes unanswered.
+let speakingFrameId: number | null = null;
 let offscreenIdleTimer: ReturnType<typeof setTimeout> | null = null;
 const OFFSCREEN_IDLE_MS = 30000;
 
@@ -39,19 +42,19 @@ function releaseDrainWaiters(): void {
   waiters.forEach((resolve) => resolve());
 }
 
-async function notifyContent(message: ContentMessage): Promise<void> {
+async function notifyContent(message: ContentMessage, frameId?: number): Promise<void> {
   const tabId = speakingTabId ?? currentTabId;
   if (tabId === null) return;
   try {
-    await sendToContentScript(tabId, message);
+    await sendToContentScript(tabId, message, frameId);
   } catch {
-    // Content script not injected in this tab
+    // Content script not injected in this tab (or frame)
   }
 }
 
 /** Strips the word highlight from one specific tab, ignoring delivery failures. */
-function clearTabHighlight(tabId: number): void {
-  void sendToContentScript(tabId, { type: 'SPEAK_ENDED' }).catch(() => {});
+function clearTabHighlight(tabId: number, frameId?: number): void {
+  void sendToContentScript(tabId, { type: 'SPEAK_ENDED' }, frameId).catch(() => {});
 }
 
 /**
@@ -119,11 +122,13 @@ async function togglePlayback(): Promise<boolean> {
  */
 async function hasTextSelection(tabId: number): Promise<boolean> {
   try {
-    const [result] = await chrome.scripting.executeScript({
-      target: { tabId },
+    const results = await chrome.scripting.executeScript({
+      // The selection can live in any frame, not just the main one, so probe
+      // every frame and treat a hit in any of them as a selection.
+      target: { tabId, allFrames: true },
       func: () => (window.getSelection()?.toString() ?? '').trim().length > 0,
     });
-    return result?.result === true;
+    return Array.isArray(results) && results.some((result) => result?.result === true);
   } catch {
     return false;
   }
@@ -147,16 +152,18 @@ chrome.commands.onCommand.addListener(async (command) => {
   // pause toggle — including when the previous run is sitting paused.
   if (await hasTextSelection(tabId)) {
     const previousTabId = speakingTabId;
+    const previousFrameId = speakingFrameId;
     await stopActiveRun();
     if (previousTabId !== null && previousTabId !== tabId) {
-      clearTabHighlight(previousTabId);
+      clearTabHighlight(previousTabId, previousFrameId ?? undefined);
     }
     speakingTabId = null;
+    speakingFrameId = null;
     currentTabId = tabId;
 
     try {
       await chrome.scripting.executeScript({
-        target: { tabId },
+        target: { tabId, allFrames: true },
         files: ['content.js'],
       });
     } catch (e) {
@@ -185,10 +192,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
 
         // The sender is the content script holding the selection, so it is the
-        // tab that must receive the word highlight.
+        // tab and frame that must receive the word highlight.
         if (sender.tab?.id) {
           currentTabId = sender.tab.id;
           speakingTabId = sender.tab.id;
+          speakingFrameId = sender.frameId ?? null;
         }
 
         // From this instant anything still arriving from the previous read is
@@ -215,10 +223,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // that is no longer being highlighted. Applying it would paint a random
         // position on the new selection.
         if (message.runId === activeRunId) {
-          await notifyContent({
-            type: 'WORD_PROGRESS',
-            payload: message.payload,
-          });
+          await notifyContent(
+            { type: 'WORD_PROGRESS', payload: message.payload },
+            speakingFrameId ?? undefined,
+          );
         }
         sendResponse({ success: true });
       } else if (message.type === 'SPEAKING_STARTED') {
@@ -228,8 +236,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // must not clear the highlight of the read that replaced it. It still
         // ends the run we are waiting on, though.
         if (message.runId === activeRunId) {
-          await notifyContent({ type: 'SPEAK_ENDED' });
+          await notifyContent({ type: 'SPEAK_ENDED' }, speakingFrameId ?? undefined);
           speakingTabId = null;
+          speakingFrameId = null;
         }
         resetOffscreenIdleTimer();
         releaseDrainWaiters();
@@ -237,8 +246,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       } else if (message.type === 'ERROR') {
         console.error('[Larynx] Speech error:', message.payload);
         if (message.runId === activeRunId) {
-          await notifyContent({ type: 'SPEAK_ERROR', payload: { error: String(message.payload) } });
+          await notifyContent(
+            { type: 'SPEAK_ERROR', payload: { error: String(message.payload) } },
+            speakingFrameId ?? undefined,
+          );
           speakingTabId = null;
+          speakingFrameId = null;
         }
         resetOffscreenIdleTimer();
         releaseDrainWaiters();

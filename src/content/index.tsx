@@ -20,6 +20,12 @@ let currentIndex = -1;
 /** Pending catch-up step, if one is in flight. */
 let catchUpTimer: ReturnType<typeof setTimeout> | null = null;
 
+/**
+ * Disarms the selection-guard listener installed while a highlight is up.
+ * Guarded by the fact that only one run ever owns the page at a time.
+ */
+let selectionGuard: (() => void) | null = null;
+
 interface ContentState {
   /** Word spans only — indexes are what `WORD_PROGRESS` addresses. */
   wordSpans: HTMLElement[];
@@ -31,7 +37,6 @@ interface ContentState {
    * once it is translated through this map back to a `wordSpans` index.
    */
   spokenToSource: number[];
-  lastText: string;
   run: () => void;
   cleanup: () => void;
 }
@@ -301,12 +306,48 @@ function unwrap(spans: HTMLElement[]): void {
   parents.forEach((parent) => parent.normalize());
 }
 
+/**
+ * Scrub native selections that spring back over the injected spans.
+ *
+ * When the user drags out a fresh selection across previously wrapped text, the
+ * browser paints its native selection colour *over* our spans — most visibly
+ * across the `larynx-gap` separators, which is the "spaces got selected"
+ * artefact. Rather than fight each span's `::selection` (which cannot be
+ * unset once the UA restores the range), listen on the capture phase and
+ * immediately clear any selection whose range touches an injected span. The
+ * listener is deliberately removed again in `cleanup()` so it never outlives
+ * the highlight it is protecting.
+ */
+function armSelectionGuard(state: ContentState): void {
+  if (selectionGuard) return;
+
+  const handler = () => {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return;
+    try {
+      const range = selection.getRangeAt(0);
+      const touchesInjected = state.injected.some((span) => {
+        try {
+          return range.intersectsNode(span);
+        } catch {
+          return false;
+        }
+      });
+      if (touchesInjected) selection.removeAllRanges();
+    } catch {
+      // A selection can be torn down mid-check; nothing to clear then.
+    }
+  };
+
+  document.addEventListener('selectionchange', handler, true);
+  selectionGuard = () => document.removeEventListener('selectionchange', handler, true);
+}
+
 if (!window.__larynx) {
   const state: ContentState = {
     wordSpans: [],
     injected: [],
     spokenToSource: [],
-    lastText: '',
     run: () => {},
     cleanup: () => {},
   };
@@ -314,6 +355,12 @@ if (!window.__larynx) {
   window.__larynx = state;
 
   state.cleanup = () => {
+    // Drop the selection guard first so no late selectionchange ticks can
+    // re-touch a page that is no longer wrapped.
+    if (selectionGuard) {
+      selectionGuard();
+      selectionGuard = null;
+    }
     if (catchUpTimer !== null) {
       clearTimeout(catchUpTimer);
       catchUpTimer = null;
@@ -333,14 +380,16 @@ if (!window.__larynx) {
     const selection = window.getSelection();
     const text = selection && !selection.isCollapsed ? selection.toString().trim() : '';
 
-    // With no live selection, repeat the last request so the shortcut keeps working
-    // after the page has already been wrapped and unwrapped.
-    if (!text && !state.lastText) return;
+    // Only ever speak what is selected *right now*. Falling back to a remembered
+    // selection means a shortcut press after the highlight has unwrapped
+    // silently re-reads whatever was selected long ago, even when the user has
+    // selected something new — or nothing at all.
+    if (!text) return;
 
     // Wrapping replaces the very nodes the range points at, so the on-screen
     // rectangle has to be read before the DOM is touched.
     let rect: DOMRect | null = null;
-    if (text && selection && selection.rangeCount > 0) {
+    if (selection && selection.rangeCount > 0) {
       try {
         rect = selection.getRangeAt(0).getBoundingClientRect();
       } catch {
@@ -350,33 +399,38 @@ if (!window.__larynx) {
 
     state.cleanup();
 
-    // The original text is what gets remembered, so pressing the shortcut twice
-    // re-derives an identical plan rather than compounding the first rewrite.
-    const activeText = text || state.lastText;
-    state.lastText = activeText;
-
     // The engine reads the cleaned-up plan; the page keeps showing the original
     // selection, and `spokenToSource` is the only thing tying the two together.
-    const plan = prepareSpeech(activeText);
+    const plan = prepareSpeech(text);
     state.spokenToSource = plan.spokenToSource;
 
-    if (text) {
-      ensureStyles();
-      const wrapped = wrapSelection(selection!);
-      state.wordSpans = wrapped.words;
-      state.injected = wrapped.injected;
+    // A selection whose text normalises to nothing (e.g. whitespace or symbols
+    // the engine drops every time) still resulted in a *live* selection, so the
+    // previous highlight must stay gone rather than silently continuing.
+    if (!plan.text) {
+      state.spokenToSource = [];
+      return;
+    }
 
-      // The range has been read and the words are now our own elements, so the
-      // browser's own selection is pure noise: the UA paints it *over* the
-      // highlight, and because it stretches across the whole selection it is
-      // what makes the gaps between words look selected. Dropping it leaves the
-      // custom background as the only thing marking the passage being read.
-      try {
-        selection!.removeAllRanges();
-      } catch {
-        // A selection can be torn down by the page between wrap and clear; the
-        // wrap already succeeded, so there is nothing left to recover.
-      }
+    ensureStyles();
+    const wrapped = wrapSelection(selection!);
+    state.wordSpans = wrapped.words;
+    state.injected = wrapped.injected;
+
+    // The page's own selection is pure noise now the words are our elements.
+    // Guard against the browser resurrecting it over the injected spans.
+    armSelectionGuard(state);
+
+    // The range has been read and the words are now our own elements, so the
+    // browser's own selection is pure noise: the UA paints it *over* the
+    // highlight, and because it stretches across the whole selection it is
+    // what makes the gaps between words look selected. Dropping it leaves the
+    // custom background as the only thing marking the passage being read.
+    try {
+      selection!.removeAllRanges();
+    } catch {
+      // A selection can be torn down by the page between wrap and clear; the
+      // wrap already succeeded, so there is nothing left to recover.
     }
 
     chrome.runtime.sendMessage(
