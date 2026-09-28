@@ -897,7 +897,7 @@ export const OptionsApp: React.FC = () => {
         </section>
 
         <footer className="border-t border-white/5 pt-6 text-center">
-          <p className="text-sm text-gray-600">Larynx v1.0.6 — Built with Web Speech API</p>
+          <p className="text-sm text-gray-600">Larynx v1.0.7 — Built with Web Speech API</p>
         </footer>
       </main>
     </div>

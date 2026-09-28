@@ -6,6 +6,7 @@
 import type { ContentMessage } from '../shared/types';
 
 const WORD_CLASS = 'larynx-word';
+const GAP_CLASS = 'larynx-gap';
 const ACTIVE_CLASS = 'larynx-word-active';
 const STYLE_ID = 'larynx-word-styles';
 
@@ -19,7 +20,10 @@ let currentIndex = -1;
 let catchUpTimer: ReturnType<typeof setTimeout> | null = null;
 
 interface ContentState {
+  /** Word spans only — indexes are what `WORD_PROGRESS` addresses. */
   wordSpans: HTMLElement[];
+  /** Every span this script injected, so cleanup can restore the page exactly. */
+  injected: HTMLElement[];
   lastText: string;
   run: () => void;
   cleanup: () => void;
@@ -35,51 +39,58 @@ declare global {
  * The extension's own stylesheet is only bundled into the options page, so the
  * highlight rules have to be injected into whichever host page is being read.
  *
- * Two things this has to defeat:
+ * The highlight is a plain rectangle produced by a *negative colour* blend:
+ * `mix-blend-mode: difference` against a white fill inverts whatever the host
+ * page has painted underneath, glyphs included. That is what keeps the current
+ * word readable on any background — a page that is already light turns the
+ * block dark, a page that is already dark turns it light, and mid-tones keep
+ * exactly the contrast they started with. Nothing about the block is themed, so
+ * no host-page colour can hide it.
  *
- * 1. Host-page resets. The selectors are specific and every colour declaration
- *    carries `!important` so a site that colours spans, or a `*` reset, cannot
- *    leave the word highlight invisible.
+ * `opacity` is the one knob that matters here, and it has a hard floor. A blend
+ * at `opacity: a` leaves `(2a - 1)` of the original contrast behind, so anything
+ * at or below 0.5 collapses the word into its own background and the highlight
+ * silently disappears. The resting range therefore sits at 0.7 (light but
+ * unmistakable) and the active word at 0.9 (near-full inversion).
  *
- * 2. The native selection. The user's text is still selected while it is being
- *    read, and the UA paints that selection *on top of* our background — which
- *    is why a plain highlight ends up hidden under a blue block. Overriding
- *    `::selection` on our own spans replaces the UA colour with the highlight
- *    itself, while leaving the selection intact so the text stays copyable.
+ * The separators between words are injected as `larynx-gap` spans rather than
+ * left as bare text nodes, because `::selection` can only be neutralised on
+ * elements. Without that, the whitespace between two highlighted words falls
+ * outside every highlighted element and the browser paints it with the native
+ * selection colour — which is exactly the "the spaces get selected" artefact.
+ *
+ * Host-page resets cannot interfere: the selectors are specific and the
+ * declarations that matter carry `!important`.
  */
 function ensureStyles(): void {
   if (document.getElementById(STYLE_ID)) return;
   const style = document.createElement('style');
   style.id = STYLE_ID;
   style.textContent = `
-    .${WORD_CLASS} {
-      background-color: transparent !important;
+    .${WORD_CLASS},
+    .${GAP_CLASS} {
+      background-color: #fff !important;
       background-image: none !important;
       box-shadow: none !important;
       outline: none !important;
       border: none !important;
-      color: inherit !important;
       text-decoration: none !important;
-      /* No padding or negative margin: a highlight must never reflow the page. */
+      /* A flat rectangle: no padding, no margin, never reflow the page. */
       padding: 0 !important;
       margin: 0 !important;
-      border-radius: 3px !important;
-      transition: background-color .1s linear;
+      border-radius: 0 !important;
+      mix-blend-mode: difference !important;
+      opacity: 0.7 !important;
+      transition: opacity .1s linear;
       -webkit-box-decoration-break: clone;
       box-decoration-break: clone;
     }
-    .${ACTIVE_CLASS} {
-      background-color: rgba(0, 255, 135, 0.34) !important;
-      background-image: none !important;
-      box-shadow: none !important;
-      border: none !important;
+    .${WORD_CLASS}.${ACTIVE_CLASS} {
+      opacity: 0.9 !important;
     }
-    .${WORD_CLASS}::selection {
+    .${WORD_CLASS}::selection,
+    .${GAP_CLASS}::selection {
       background-color: transparent !important;
-      color: inherit !important;
-    }
-    .${ACTIVE_CLASS}::selection {
-      background-color: rgba(0, 255, 135, 0.34) !important;
       color: inherit !important;
     }`;
   (document.head || document.documentElement).appendChild(style);
@@ -156,11 +167,16 @@ function collectTextNodes(range: Range): Text[] {
  * Replaces the covered slice of one text node with per-word spans.
  *
  * Every character of the original slice is preserved verbatim: the text between
- * words (and any leading/trailing whitespace) is emitted as real text nodes using
- * the exact original substring, never a normalised " ". Collapsing the separators
+ * words (and any leading/trailing whitespace) is emitted as real text using the
+ * exact original substring, never a normalised " ". Collapsing the separators
  * would visibly rewrite the host page's text once the spans are unwrapped.
+ *
+ * Separators that fall *inside* the selection are wrapped in `larynx-gap` spans
+ * so they pick up the range background and the `::selection` override. The text
+ * before the selection and after it stays as bare text nodes, because that part
+ * of the node was never selected and must not be highlighted.
  */
-function wrapTextNode(node: Text, start: number, end: number, spans: HTMLElement[]): void {
+function wrapTextNode(node: Text, start: number, end: number, spans: HTMLElement[], injected: HTMLElement[]): void {
   const parent = node.parentNode;
   if (!parent) return;
 
@@ -174,27 +190,33 @@ function wrapTextNode(node: Text, start: number, end: number, spans: HTMLElement
     fragment.appendChild(document.createTextNode(node.data.slice(0, start)));
   }
 
+  const appendGap = (value: string) => {
+    if (!value) return;
+    const gap = document.createElement('span');
+    gap.className = GAP_CLASS;
+    gap.textContent = value;
+    injected.push(gap);
+    fragment.appendChild(gap);
+  };
+
   // Walk the word matches and copy the gaps between them through untouched, so
   // each span holds exactly one word and the separators keep their original form.
   const wordPattern = /\S+/g;
   let cursor = 0;
   let match: RegExpExecArray | null;
   while ((match = wordPattern.exec(covered)) !== null) {
-    if (match.index > cursor) {
-      fragment.appendChild(document.createTextNode(covered.slice(cursor, match.index)));
-    }
+    appendGap(covered.slice(cursor, match.index));
     const span = document.createElement('span');
     span.className = WORD_CLASS;
     span.textContent = match[0];
     span.dataset.wordIndex = String(spans.length);
     spans.push(span);
+    injected.push(span);
     fragment.appendChild(span);
     cursor = match.index + match[0].length;
   }
 
-  if (cursor < covered.length) {
-    fragment.appendChild(document.createTextNode(covered.slice(cursor)));
-  }
+  appendGap(covered.slice(cursor));
 
   if (end < node.data.length) {
     fragment.appendChild(document.createTextNode(node.data.slice(end)));
@@ -203,10 +225,11 @@ function wrapTextNode(node: Text, start: number, end: number, spans: HTMLElement
   parent.replaceChild(fragment, node);
 }
 
-/** Wraps every word of the current selection. Returns the flat, ordered span list. */
-function wrapSelection(selection: Selection): HTMLElement[] {
+/** Wraps every word of the current selection. Returns the word list and every injected span. */
+function wrapSelection(selection: Selection): { words: HTMLElement[]; injected: HTMLElement[] } {
   const spans: HTMLElement[] = [];
-  if (selection.rangeCount === 0) return spans;
+  const injected: HTMLElement[] = [];
+  if (selection.rangeCount === 0) return { words: spans, injected };
 
   const range = selection.getRangeAt(0);
   const nodes = collectTextNodes(range);
@@ -216,19 +239,20 @@ function wrapSelection(selection: Selection): HTMLElement[] {
     const start = node === range.startContainer ? range.startOffset : 0;
     const end = node === range.endContainer ? range.endOffset : node.data.length;
     if (end > start) {
-      wrapTextNode(node, start, end, spans);
+      wrapTextNode(node, start, end, spans, injected);
     }
   });
 
-  return spans;
+  return { words: spans, injected };
 }
 
 /**
  * Undoes the wrapping so the page is left byte-for-byte as it was found.
  *
- * The separators between words are real text nodes, so each span simply becomes a
- * plain text node again. No separator is synthesised here — inserting one would
- * change the rendered text of the host page.
+ * The separators between words are elements in their own right, so the list
+ * handed in here covers both the word spans and the gap spans. Each one simply
+ * becomes a plain text node again — no separator is synthesised, because
+ * inserting one would change the rendered text of the host page.
  */
 function unwrap(spans: HTMLElement[]): void {
   const parents = new Set<Node>();
@@ -247,6 +271,7 @@ function unwrap(spans: HTMLElement[]): void {
 if (!window.__larynx) {
   const state: ContentState = {
     wordSpans: [],
+    injected: [],
     lastText: '',
     run: () => {},
     cleanup: () => {},
@@ -260,10 +285,11 @@ if (!window.__larynx) {
       catchUpTimer = null;
     }
     currentIndex = -1;
-    if (state.wordSpans.length > 0) {
-      unwrap(state.wordSpans);
-      state.wordSpans = [];
+    if (state.injected.length > 0) {
+      unwrap(state.injected);
+      state.injected = [];
     }
+    state.wordSpans = [];
     const style = document.getElementById(STYLE_ID);
     if (style?.parentNode) style.parentNode.removeChild(style);
   };
@@ -294,7 +320,21 @@ if (!window.__larynx) {
 
     if (text) {
       ensureStyles();
-      state.wordSpans = wrapSelection(selection!);
+      const wrapped = wrapSelection(selection!);
+      state.wordSpans = wrapped.words;
+      state.injected = wrapped.injected;
+
+      // The range has been read and the words are now our own elements, so the
+      // browser's own selection is pure noise: the UA paints it *over* the
+      // highlight, and because it stretches across the whole selection it is
+      // what makes the gaps between words look selected. Dropping it leaves the
+      // custom background as the only thing marking the passage being read.
+      try {
+        selection!.removeAllRanges();
+      } catch {
+        // A selection can be torn down by the page between wrap and clear; the
+        // wrap already succeeded, so there is nothing left to recover.
+      }
     }
 
     chrome.runtime.sendMessage(

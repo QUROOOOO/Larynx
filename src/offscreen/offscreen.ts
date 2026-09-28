@@ -30,7 +30,6 @@ const OFFSCREEN_MESSAGE_TYPES = new Set<OffscreenMessage['type']>([
 const PUMP_TICK_MS = 16;
 const MIN_WORD_INTERVAL_MS = 55;
 const CATCHUP_STEP_MS = 20;
-const CLAUSE_GAP_MS = 180;
 const RESTART_WAIT_MS = 2000;
 const RESUME_DELAY_MS = 120;
 
@@ -66,7 +65,7 @@ let currentSettings: TTSSettings = {
   voice: '',
   rate: 1.0,
   pauseOnPunctuation: true,
-  sentenceGap: 300,
+  sentenceGap: 120,
 };
 
 function delay(ms: number): Promise<void> {
@@ -118,15 +117,6 @@ function getStatus(): SpeechStatus {
 /* ------------------------------------------------------------------ *
  * Speech
  * ------------------------------------------------------------------ */
-
-function splitClauses(text: string, pauseOnPunctuation: boolean): string[] {
-  if (!pauseOnPunctuation) return [text];
-  const clauses = text
-    .split(/(?<=[,;:])\s+/)
-    .map((c) => c.trim())
-    .filter(Boolean);
-  return clauses.length > 0 ? clauses : [text];
-}
 
 /** Word texts plus each word's character offset, so a boundary charIndex can be mapped back. */
 function tokenizeWithOffsets(text: string): { words: string[]; offsets: number[] } {
@@ -327,27 +317,6 @@ function speakUtterance(
   });
 }
 
-/** Speaks one sentence, clause by clause, honouring `pauseOnPunctuation`. */
-async function speakSentence(
-  text: string,
-  settings: TTSSettings,
-  sentenceIndex: number,
-  base: number,
-): Promise<number> {
-  const clauses = splitClauses(text, settings.pauseOnPunctuation);
-  let spoken = 0;
-
-  for (let i = 0; i < clauses.length; i++) {
-    spoken += await speakUtterance(clauses[i], settings, sentenceIndex, base + spoken);
-    if (stopRequested) break;
-    if (i < clauses.length - 1 && !isPaused) {
-      await delay(CLAUSE_GAP_MS);
-    }
-  }
-
-  return spoken;
-}
-
 async function startSpeak(request: SpeakRequest): Promise<void> {
   if (isProcessing) {
     stopRequested = true;
@@ -390,7 +359,11 @@ async function startSpeak(request: SpeakRequest): Promise<void> {
         payload: { sentenceIndex, sentenceText: sentence },
       });
 
-      const spoken = await speakSentence(
+      // One utterance per sentence. The engine owns every pause inside the
+      // sentence, so a single request per sentence keeps one continuous
+      // intonation contour and avoids the dead air that a fresh `speak()` call
+      // costs while the voice re-primes between utterances.
+      const spoken = await speakUtterance(
         sentence,
         currentSettings,
         sentenceIndex,
@@ -400,7 +373,11 @@ async function startSpeak(request: SpeakRequest): Promise<void> {
       currentSentenceIndex++;
 
       if (stopRequested) break;
-      if (currentSettings.sentenceGap > 0 && sentenceQueue.length > 0) {
+      if (
+        currentSettings.pauseOnPunctuation &&
+        currentSettings.sentenceGap > 0 &&
+        sentenceQueue.length > 0
+      ) {
         await delay(currentSettings.sentenceGap);
       }
     }

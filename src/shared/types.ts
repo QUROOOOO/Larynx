@@ -4,7 +4,7 @@ export interface TTSSettings {
   voice: string; // voice URI
   rate: number; // 0.5 - 2.0
   pauseOnPunctuation: boolean;
-  sentenceGap: number; // milliseconds pause between sentences (default 300)
+  sentenceGap: number; // milliseconds pause between sentences (default 120)
 }
 
 export interface VoiceInfo {
@@ -84,5 +84,5 @@ export const DEFAULT_SETTINGS: TTSSettings = {
   voice: '',
   rate: 1.0,
   pauseOnPunctuation: true,
-  sentenceGap: 300,
+  sentenceGap: 120,
 };
