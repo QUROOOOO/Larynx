@@ -1,0 +1,60 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Larynx harness</title>
+<style>
+  body { font: 16px/1.6 Georgia, serif; background: #fff; color: #111; margin: 2rem; max-width: 46rem; }
+  h2 { font: 600 14px system-ui; color: #666; text-transform: uppercase; letter-spacing: .08em; }
+  section { border-top: 1px solid #ddd; padding-top: 1rem; margin-bottom: 2rem; }
+  p { margin: .5rem 0; }
+  /* a dark-host simulation, to see what the blend does */
+  .dark { background: #111216; color: #e8e8ea; padding: 1rem; }
+  .isolate { isolation: isolate; }
+  .transformed { transform: translateZ(0); }
+</style>
+</head>
+<body>
+
+<section id="s-plain">
+  <h2>plain paragraph</h2>
+  <p id="p1">Energy availability &rarr; understand agricultural urgency &rarr; optimize allocation &rarr; minimize water use, energy cost and food loss.</p>
+</section>
+
+<section id="s-inline">
+  <h2>inline markup</h2>
+  <p id="p2">The <strong>API</strong> returns <em>JSON</em> after the <code>HTTP</code> call, and the <a href="https://example.com">link</a> stays put.</p>
+</section>
+
+<section id="s-blocks">
+  <h2>across block elements</h2>
+  <p id="p3a">First sentence here.</p>
+  <p id="p3b">Second sentence continues here.</p>
+  <ul><li id="p3c">List item one.</li><li id="p3d">List item two.</li></ul>
+</section>
+
+<section id="s-cite">
+  <h2>superscript citations</h2>
+  <p id="p4">Prior work showed this<sup>1</sup> and that<sup>2</sup>, with more detail<sup>3,4</sup> elsewhere.</p>
+</section>
+
+<section id="s-dash">
+  <h2>unicode dashes &amp; arrows inline</h2>
+  <p id="p5">Press &uarr; to scroll up, &darr; to scroll down, and &rarr; to advance. The M&ndash;M test and the &alpha;&beta; pair.</p>
+</section>
+
+<section class="dark">
+  <h2 style="color:#888">dark host</h2>
+  <p id="p6">Reading dark page text with the highlight on top of it.</p>
+</section>
+
+<section class="dark isolate">
+  <h2 style="color:#888">dark host + isolation</h2>
+  <p id="p7">Blend behaviour when the ancestor isolates.</p>
+</section>
+
+<section class="dark transformed">
+  <h2 style="color:#888">dark host + transform</h2>
+  <p id="p8">Blend behaviour when the ancestor has a transform.</p>
+</section>
+
+</body>
+</html>

@@ -30,8 +30,7 @@ coverage/
 # TypeScript
 *.tsbuildinfo
 
-# Local scripts
-*.cjs
-create-png.cjs
-generate-icons.cjs
-generate-icons.js
+# Local scratch scripts
+/create-png.cjs
+/generate-icons.cjs
+/generate-icons.js

@@ -15,7 +15,7 @@ import {
 import { getSettings, setSettings, onSettingsChange, TTSSettings } from '../shared/storage';
 import { VoiceInfo, DEFAULT_SETTINGS } from '../shared/types';
 
-const VERSION = '1.0.8';
+const VERSION = '1.0.9';
 const PREVIEW_TEXT = 'The quick brown fox jumps over the lazy dog.';
 const COMMAND_NAME = 'speak-selection';
 const RECORDING_TIMEOUT_MS = 5000;
