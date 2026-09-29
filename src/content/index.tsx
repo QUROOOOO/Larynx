@@ -38,22 +38,15 @@ declare global {
   }
 }
 
+// v1.3.0
+
 /**
  * Inject styles for the word spans and the liquid sliding pill.
  *
- * The pill uses `mix-blend-mode: difference` — this is the TRUE "negative of
- * the website's color palette" technique. Whatever color is underneath the pill
- * gets mathematically inverted: white background → black pill content, dark
- * backgrounds → light pill content, mid-tones stay contrasted. Zero theme
- * detection needed. The text itself is set to white so that after difference
- * blending with the black pill it reads perfectly on any background.
- *
- * mix-blend-mode: difference explanation:
- *   result_color = |destination - source|
- *   source (pill) = #FFFFFF (white = rgb(255,255,255))
- *   on white bg: |255-255| = 0 → black text ✓
- *   on black bg: |0-255| = 255 → white text ✓
- *   on blue: |links~rgb(0,100,200)-255| → warm orange/red ✓
+ * The active word gets its text color set to the mathematical inverse of the
+ * page’s own text color, and the pill behind it gets the inverse of the page’s
+ * background. This is computed at runtime from getComputedStyle, so it works
+ * on every website — light, dark, or any arbitrary color palette.
  */
 function ensureStyles(): void {
   if (document.getElementById(STYLE_ID)) return;
@@ -79,10 +72,6 @@ function ensureStyles(): void {
     .${WORD_CLASS}.${ACTIVE_CLASS} {
       position: relative !important;
       z-index: 999995 !important;
-      /* White text, difference-blended against the white pill:
-         white pill over any bg → inverted color, text stays pure white above it */
-      color: white !important;
-      mix-blend-mode: difference !important;
     }
     .${WORD_CLASS}::selection,
     .${GAP_CLASS}::selection {
@@ -94,8 +83,6 @@ function ensureStyles(): void {
       top: 0 !important;
       left: 0 !important;
       pointer-events: none !important;
-      /* White pill + mix-blend-mode:difference = true color inversion of anything underneath */
-      background-color: white !important;
       border-radius: 4px !important;
       box-sizing: border-box !important;
       z-index: 999990 !important;
@@ -119,10 +106,64 @@ function getOrCreateLiquidPill(): HTMLElement {
 }
 
 /**
- * Paints the liquid sliding pill on the active word.
- * Uses mix-blend-mode: difference so the highlight color is literally the
- * mathematical inverse of whatever the page has painted underneath — works
- * on any website with zero theme detection.
+ * Parses an rgb/rgba string into [r,g,b]. Returns null if not parseable.
+ */
+function parseRGB(color: string): [number, number, number] | null {
+  const m = color.match(/\d+/g);
+  if (!m || m.length < 3) return null;
+  return [parseInt(m[0], 10), parseInt(m[1], 10), parseInt(m[2], 10)];
+}
+
+/**
+ * Returns the CSS `rgb(...)` string for the mathematical inverse of a color.
+ */
+function invertRGB(rgb: [number, number, number]): string {
+  return `rgb(${255 - rgb[0]}, ${255 - rgb[1]}, ${255 - rgb[2]})`;
+}
+
+/**
+ * Walks up the DOM to find the first non-transparent background color.
+ * Falls back to white (light pages) if none found.
+ */
+function getEffectiveBg(el: HTMLElement): [number, number, number] {
+  let curr: HTMLElement | null = el;
+  while (curr && curr !== document.documentElement) {
+    const bg = window.getComputedStyle(curr).backgroundColor;
+    if (bg && bg !== 'transparent' && bg !== 'rgba(0, 0, 0, 0)') {
+      const parsed = parseRGB(bg);
+      // Skip nearly-transparent rgba (alpha close to 0)
+      if (parsed && !bg.startsWith('rgba(0, 0, 0, 0')) {
+        return parsed;
+      }
+    }
+    curr = curr.parentElement;
+  }
+  // Try body / html
+  for (const root of [document.body, document.documentElement]) {
+    if (!root) continue;
+    const bg = window.getComputedStyle(root).backgroundColor;
+    if (bg && bg !== 'transparent' && bg !== 'rgba(0, 0, 0, 0)') {
+      const parsed = parseRGB(bg);
+      if (parsed) return parsed;
+    }
+  }
+  return [255, 255, 255]; // Default: white page
+}
+
+/**
+ * Paints the active word with a liquid sliding pill that shows the true negative
+ * of the page’s own color palette.
+ *
+ * How it works:
+ *   1. Read the element’s computed text color and effective background color.
+ *   2. Invert both: rgb(255-r, 255-g, 255-b).
+ *   3. Apply inverted-background to the pill behind the word.
+ *   4. Apply inverted-text-color to the word text itself.
+ *
+ * Result on any site:
+ *   White page + black text  →  black pill + white word text  ✓
+ *   Dark page + white text   →  white pill + black word text  ✓
+ *   Blue link text on white  →  black pill + orange word text ✓
  */
 function paintWord(spans: HTMLElement[], index: number): void {
   if (index < 0 || index >= spans.length) return;
@@ -132,7 +173,6 @@ function paintWord(spans: HTMLElement[], index: number): void {
     const prev = spans[currentIndex];
     prev.classList.remove(ACTIVE_CLASS);
     prev.style.removeProperty('color');
-    prev.style.removeProperty('mix-blend-mode');
     prev.style.removeProperty('position');
     prev.style.removeProperty('z-index');
   }
@@ -141,6 +181,29 @@ function paintWord(spans: HTMLElement[], index: number): void {
   if (!el) return;
 
   el.classList.add(ACTIVE_CLASS);
+
+  // Read current computed colors and invert them for the highlight
+  try {
+    const textRGB = parseRGB(window.getComputedStyle(el).color);
+    const bgRGB = getEffectiveBg(el);
+
+    // Pill = inverse of page background (dark on light pages, light on dark pages)
+    const pillColor = invertRGB(bgRGB);
+    // Word text = inverse of original text color (readable against the inverted pill)
+    const wordTextColor = textRGB ? invertRGB(textRGB) : invertRGB(bgRGB);
+
+    const pill = getOrCreateLiquidPill();
+    pill.style.setProperty('background-color', pillColor, 'important');
+    el.style.setProperty('color', wordTextColor, 'important');
+  } catch {
+    // Fallback: black pill, white text (works on almost all light pages)
+    const pill = getOrCreateLiquidPill();
+    pill.style.setProperty('background-color', '#000000', 'important');
+    el.style.setProperty('color', '#ffffff', 'important');
+  }
+
+  el.style.setProperty('position', 'relative', 'important');
+  el.style.setProperty('z-index', '999995', 'important');
   currentIndex = index;
 
   try {
@@ -376,7 +439,6 @@ if (!window.__larynx) {
       if (prev) {
         prev.classList.remove(ACTIVE_CLASS);
         prev.style.removeProperty('color');
-        prev.style.removeProperty('mix-blend-mode');
         prev.style.removeProperty('position');
         prev.style.removeProperty('z-index');
       }
