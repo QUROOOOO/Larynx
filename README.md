@@ -80,17 +80,17 @@ Traditional text-to-speech tools are clunky: they inject disruptive overlay widg
 1. **Selection Capture & Range Protection**:
    The content script detects the user's highlighted text range across any page or iframe. Before touching the DOM, it snapshots character boundaries and normalizes text for speech (cleaning bare URLs, bracketed citations, and acronyms).
 
-2. **DOM Spanning & Highlighting**:
-   The selected range is wrapped into discrete word elements without changing the host page's formatting, font size, or line height. When an audio progress event arrives, the active word span receives a vibrant glowing accent style.
+2. **Sliding Negative-Color Word Highlight**:
+   The selected range is highlighted by a floating negative-contrast pill that glides with a snappy, physical spring jiggle from word to word (solid black on light mode, solid white on dark mode), ensuring optimal contrast and readability without any layout shift.
 
-3. **Offscreen Audio Synthesis**:
-   Manifest V3 service workers cannot access audio output directly. Larynx uses an on-demand Chrome Offscreen Document hosting the browser's `SpeechSynthesis` engine. Speech is processed sentence-by-sentence to maintain natural cadence and intonation contours.
+3. **Human-Like Dictation & Audio Synthesis**:
+   Manifest V3 service workers cannot access audio output directly. Larynx uses an on-demand Chrome Offscreen Document hosting the browser's `SpeechSynthesis` engine. Text is processed with smart dictation (expanding numbers, currencies, percentages, and ordinals) and natural clause breathing at commas, dashes, and sentence boundaries.
 
 4. **Speech-to-Source Synchronization**:
-   Speech engines can emit irregular boundary timings depending on the operating system voice. Larynx features a monotonic word sequencer that pairs real engine boundary events with dynamic rate estimation, ensuring the highlight never gets stuck or skips words.
+   Speech engines can emit irregular boundary timings depending on the operating system voice. Larynx features a monotonic adaptive word sequencer that pairs real engine boundary events with dynamic rate calibration, guaranteeing that speech and text highlight remain in perfect lockstep without lag or jitter.
 
 5. **Lossless Restoration**:
-   Once speech finishes or is interrupted, all injected spans are automatically unwrapped and adjacent text nodes are unified via DOM normalization. The webpage is restored byte-for-byte to its original condition.
+   Once speech finishes or is interrupted, all injected spans and the sliding pill are automatically removed and adjacent text nodes are unified via DOM normalization. The webpage is restored byte-for-byte to its original condition.
 
 ---
 

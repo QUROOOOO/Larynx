@@ -100,8 +100,22 @@ function getVoices(): VoiceInfo[] {
 }
 
 function findVoice(voiceURI: string): SpeechSynthesisVoice | null {
-  if (!window.speechSynthesis || !voiceURI) return null;
-  return window.speechSynthesis.getVoices().find((v) => v.voiceURI === voiceURI) || null;
+  if (!window.speechSynthesis) return null;
+  const voices = window.speechSynthesis.getVoices();
+  if (voices.length === 0) return null;
+  if (voiceURI) {
+    const exact = voices.find((v) => v.voiceURI === voiceURI);
+    if (exact) return exact;
+  }
+  // Auto-select best natural voice if not specified or not found
+  const naturalKeywords = ['online (natural)', 'natural', 'neural', 'google us english', 'enhanced', 'premium'];
+  for (const kw of naturalKeywords) {
+    const match = voices.find((v) => v.lang.startsWith('en') && v.name.toLowerCase().includes(kw));
+    if (match) return match;
+  }
+  const english = voices.find((v) => v.lang.startsWith('en') && !v.name.toLowerCase().includes('desktop'));
+  if (english) return english;
+  return voices[0] || null;
 }
 
 /** Playback state the background worker polls to drive the pause/resume toggle. */
@@ -186,6 +200,9 @@ function speakUtterance(
     let emitted = -1;
     let nextAt = 0;
     let handle: ReturnType<typeof setInterval> | null = null;
+    let adaptiveTempoMultiplier = 1.0;
+    let lastBoundaryIndex = -1;
+    let lastBoundaryTime = 0;
 
     const emit = (local: number) => {
       if (local < 0 || local >= words.length) return;
@@ -198,10 +215,29 @@ function speakUtterance(
     /** Milliseconds to hold the cursor at word `i`. */
     const paceFor = (i: number): number => {
       const word = words[i] || '';
-      // Average conversational speech at 1.0x rate is ~165 WPM (~360ms per standard 5-character word)
-      const baseMs = 360 / Math.max(0.2, settings.rate);
-      const charFactor = Math.max(0.65, Math.min(1.75, (word.length + 1) / 5));
-      return Math.max(MIN_WORD_INTERVAL_MS, Math.round(baseMs * charFactor));
+      // Accurate real-world speech tempo: at 1.0x rate, TTS engines speak at ~155-165 WPM (~365ms base per word)
+      const baseMs = 365 / Math.max(0.2, settings.rate);
+      const cleanLen = word.replace(/[^\p{L}\p{N}]/gu, '').length;
+
+      // Realistic phonetic weighting: short grammatical words take ~160-200ms
+      let factor = 1.0;
+      if (cleanLen <= 2) factor = 0.52;
+      else if (cleanLen <= 4) factor = 0.78;
+      else if (cleanLen <= 7) factor = 1.05;
+      else if (cleanLen <= 10) factor = 1.35;
+      else factor = 1.65;
+
+      let punctuationPause = 0;
+      if (settings.pauseOnPunctuation) {
+        if (/[,;—–]/.test(word)) {
+          punctuationPause = Math.round(140 / settings.rate);
+        } else if (/[.!?:]/.test(word)) {
+          punctuationPause = Math.round(260 / settings.rate);
+        }
+      }
+
+      const calculated = Math.max(MIN_WORD_INTERVAL_MS, Math.round(baseMs * factor) + punctuationPause);
+      return Math.round(calculated * adaptiveTempoMultiplier);
     };
 
     const stop = () => {
@@ -214,6 +250,7 @@ function speakUtterance(
 
     const pump = () => {
       if (isPaused) return;
+
       if (emitted >= words.length - 1) {
         stop();
         return;
@@ -229,7 +266,11 @@ function speakUtterance(
     utterance.onstart = () => {
       sendRunStamped({ type: 'SPEAKING_STARTED', payload: { sentenceIndex } });
       emitted = -1;
-      nextAt = Date.now();
+      adaptiveTempoMultiplier = 1.0;
+      lastBoundaryIndex = -1;
+      lastBoundaryTime = 0;
+      // Start immediately on word 0 once speech starts
+      nextAt = Date.now() + 25;
       handle = setInterval(pump, PUMP_TICK_MS);
       activePump = {
         rearm: () => {
@@ -240,7 +281,7 @@ function speakUtterance(
 
     utterance.onboundary = (event) => {
       const boundaryEvent = event as SpeechSynthesisEvent;
-      // Filter out non-word boundaries (Chrome fires 'sentence' with charIndex: 0, which would reset position)
+      // Filter out non-word boundaries (Chrome fires 'sentence' with charIndex: 0)
       if (boundaryEvent.name && boundaryEvent.name !== 'word') return;
 
       const charIndex = boundaryEvent.charIndex;
@@ -249,10 +290,35 @@ function speakUtterance(
       const i = wordIndexAt(offsets, charIndex);
       if (i < 0 || i >= words.length) return;
 
-      // Real engine boundary confirmed: snap directly to this word
+      // CRITICAL SYNCHRONIZATION GUARANTEE:
+      // Monotonic progression: Never allow highlight to fall backwards!
+      if (i <= emitted && emitted !== -1) return;
+
+      // Filter out spurious jumps beyond 3 words ahead
+      if (emitted >= 0 && i > emitted + 3) return;
+
+      // Measure acoustic speaking tempo and adapt drift smoothly
+      const now = Date.now();
+      if (lastBoundaryIndex >= 0 && i > lastBoundaryIndex && lastBoundaryTime > 0) {
+        const actualDelta = now - lastBoundaryTime;
+        let expectedDelta = 0;
+        for (let k = lastBoundaryIndex; k < i; k++) {
+          expectedDelta += paceFor(k) / adaptiveTempoMultiplier;
+        }
+        if (expectedDelta > 50) {
+          const ratio = actualDelta / expectedDelta;
+          if (ratio >= 0.5 && ratio <= 1.8) {
+            adaptiveTempoMultiplier = adaptiveTempoMultiplier * 0.75 + ratio * 0.25;
+          }
+        }
+      }
+
+      lastBoundaryIndex = i;
+      lastBoundaryTime = now;
+
       emitted = i;
       emit(emitted);
-      nextAt = Date.now() + paceFor(emitted);
+      nextAt = now + paceFor(emitted);
     };
 
     /** Emits any word the engine never reached, so the tail is never left dark. */

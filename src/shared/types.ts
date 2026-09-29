@@ -84,5 +84,5 @@ export const DEFAULT_SETTINGS: TTSSettings = {
   voice: '',
   rate: 1.0,
   pauseOnPunctuation: true,
-  sentenceGap: 120,
+  sentenceGap: 260,
 };

@@ -8,24 +8,25 @@ import {
   Check,
   ChevronDown,
   Command,
+  Filter,
   Headphones,
   Keyboard,
   Mic,
   MicOff,
+  Minus,
   Pause,
   Play,
+  Plus,
   RotateCcw,
   Search,
   Sliders,
-  Sparkles,
   Volume2,
-  Zap,
 } from 'lucide-react';
 import { getSettings, setSettings, onSettingsChange, TTSSettings } from '../shared/storage';
 import { VoiceInfo, DEFAULT_SETTINGS } from '../shared/types';
 import { splitIntoSentences } from '../shared/text-utils';
 
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 const COMMAND_NAME = 'speak-selection';
 const RECORDING_TIMEOUT_MS = 5000;
 const SHORTCUT_UPDATE_TIMEOUT_MS = 2500;
@@ -306,6 +307,55 @@ export const OptionsApp: React.FC = () => {
   const [playgroundPlaying, setPlaygroundPlaying] = useState(false);
   const [playgroundActiveWordIndex, setPlaygroundActiveWordIndex] = useState<number | null>(null);
   const playgroundTokens = useMemo(() => playgroundText.match(/\S+/g) ?? [], [playgroundText]);
+
+  // Test Bench sliding highlight pill
+  const benchWordRefs = useRef<Array<HTMLSpanElement | null>>([]);
+  const benchContainerRef = useRef<HTMLDivElement>(null);
+  const [pillStyle, setPillStyle] = useState<{
+    transform: string;
+    width: string;
+    height: string;
+    opacity: number;
+    isLineBreak: boolean;
+  }>({
+    transform: 'translate3d(0, 0, 0)',
+    width: '0px',
+    height: '0px',
+    opacity: 0,
+    isLineBreak: false,
+  });
+
+  useEffect(() => {
+    if (playgroundActiveWordIndex === null || playgroundActiveWordIndex < 0 || playgroundActiveWordIndex >= playgroundTokens.length) {
+      setPillStyle((prev) => ({ ...prev, opacity: 0 }));
+      return;
+    }
+    const el = benchWordRefs.current[playgroundActiveWordIndex];
+    const container = benchContainerRef.current;
+    if (!el || !container) return;
+
+    const cRect = container.getBoundingClientRect();
+    const wRect = el.getBoundingClientRect();
+
+    const targetX = Math.round(wRect.left - cRect.left - 2);
+    const targetY = Math.round(wRect.top - cRect.top - 1);
+    const targetW = Math.max(8, Math.round(wRect.width + 4));
+    const targetH = Math.max(14, Math.round(wRect.height + 2));
+
+    setPillStyle((prev) => {
+      const match = prev.transform.match(/translate3d\(([^,]+)px,\s*([^,]+)px/);
+      const prevY = match ? parseFloat(match[2]) : targetY;
+      const isLineBreak = prev.opacity > 0 && Math.abs(targetY - prevY) > 8;
+
+      return {
+        transform: `translate3d(${targetX}px, ${targetY}px, 0)`,
+        width: `${targetW}px`,
+        height: `${targetH}px`,
+        opacity: 1,
+        isLineBreak,
+      };
+    });
+  }, [playgroundActiveWordIndex, playgroundTokens.length]);
 
   // Shortcut recorder state
   const [shortcut, setShortcut] = useState('');
@@ -705,76 +755,89 @@ export const OptionsApp: React.FC = () => {
   const estimatedWpm = Math.round(BASE_WPM * settings.rate);
 
   return (
-    <div className="min-h-screen bg-[#090A0F] text-white font-sans selection:bg-[#FF5C29]/30 selection:text-white">
-      {/* Background ambient lighting */}
-      <div className="fixed inset-0 pointer-events-none overflow-hidden z-0">
-        <div className="absolute -top-40 left-1/2 -translate-x-1/2 w-[700px] h-[350px] bg-[#FF5C29]/10 rounded-full blur-[140px]" />
-        <div className="absolute top-1/3 -left-40 w-[450px] h-[450px] bg-indigo-600/5 rounded-full blur-[120px]" />
-      </div>
-
+    <div className="min-h-screen bg-[#0A0B0E] text-neutral-100 font-sans selection:bg-[#FF5222]/30 selection:text-white">
       <div className="relative z-10 mx-auto w-full max-w-4xl px-5 sm:px-8 py-10 sm:py-14 space-y-8">
         {/* Header Bar */}
-        <header className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-6 pb-6 border-b border-white/[0.08]">
+        <header className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-5 pb-6 border-b border-white/[0.08]">
           <div className="flex items-center gap-4">
-            <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-[#FF5C29] via-[#FF6E3D] to-[#FF8A54] flex items-center justify-center shadow-lg shadow-[#FF5C29]/25 shrink-0 ring-1 ring-white/20">
-              <Volume2 size={24} className="text-white" strokeWidth={2.5} />
+            <div className="w-11 h-11 rounded-xl bg-[#141720] border border-white/10 flex items-center justify-center text-[#FF5222] shadow-sm shrink-0">
+              <Volume2 size={22} strokeWidth={2.2} />
             </div>
             <div>
               <div className="flex items-center gap-2.5">
-                <h1 className="text-2xl font-bold tracking-tight text-white">Larynx</h1>
-                <span className="font-mono text-xs font-semibold px-2 py-0.5 rounded-full bg-[#FF5C29]/15 text-[#FF5C29] border border-[#FF5C29]/30">
+                <h1 className="text-xl font-bold tracking-tight text-white">Larynx</h1>
+                <span className="font-mono text-[11px] font-semibold px-2 py-0.5 rounded-md bg-white/[0.06] text-neutral-300 border border-white/10">
                   v{VERSION}
                 </span>
-                <span className="hidden sm:inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                  <Zap size={11} /> On-Device
+                <span className="text-[11px] font-mono text-emerald-400/90 flex items-center gap-1.5 ml-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  Ready
                 </span>
               </div>
-              <p className="text-sm text-slate-400 mt-0.5">
-                Instant, natural text-to-speech with live word-by-word highlighting.
+              <p className="text-xs text-neutral-400 mt-1">
+                Natural dictation & speech synthesizer with negative-contrast sliding highlight.
               </p>
             </div>
           </div>
 
-          {/* Quick status badges */}
-          <div className="flex items-center gap-2 bg-[#121622] border border-white/[0.08] px-3.5 py-2 rounded-xl text-xs text-slate-300 shadow-sm self-start sm:self-auto">
-            <span className="flex items-center gap-1.5 text-slate-400">
-              <Headphones size={13} className="text-[#FF5C29]" />
-              {selectedVoice ? selectedVoice.name.split('-')[0].trim() : 'System Voice'}
+          {/* Quick status bar */}
+          <div className="flex items-center gap-2 bg-[#12141B] border border-white/[0.08] px-3.5 py-1.5 rounded-xl text-xs text-neutral-300 shadow-sm self-start sm:self-auto font-mono">
+            <span className="flex items-center gap-1.5 text-neutral-400 font-sans">
+              <Headphones size={13} className="text-[#FF5222]" />
+              <span className="truncate max-w-[140px]">{selectedVoice ? selectedVoice.name.split('-')[0].trim() : 'System Voice'}</span>
             </span>
             <span className="text-white/20">|</span>
-            <span className="font-mono text-[#FF5C29] font-medium">{settings.rate.toFixed(2)}×</span>
+            <span className="text-[#FF5222] font-semibold">{settings.rate.toFixed(2)}×</span>
             <span className="text-white/20">|</span>
-            <span className="font-mono text-slate-300 font-medium">{shortcut || 'Ctrl+Shift+S'}</span>
+            <span className="text-neutral-300 font-medium">{shortcut || 'Ctrl+Shift+S'}</span>
           </div>
         </header>
 
         {/* ---------------------------------------------------------------- */}
         {/* INTERACTIVE PLAYGROUND (Test Bench)                             */}
         {/* ---------------------------------------------------------------- */}
-        <section className="rounded-2xl bg-gradient-to-b from-[#131724] to-[#0E121D] border border-white/[0.08] p-6 shadow-xl relative overflow-hidden">
-          <div className="flex items-center justify-between gap-4 mb-4">
+        <section className="rounded-2xl bg-[#111319] border border-white/[0.08] p-6 shadow-lg space-y-4">
+          <div className="flex items-center justify-between gap-4">
             <div className="flex items-center gap-2">
-              <Sparkles size={16} className="text-[#FF5C29]" />
-              <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">
-                Interactive Test Bench
+              <Sliders size={15} className="text-[#FF5222]" />
+              <h2 className="text-xs font-semibold uppercase tracking-wider text-neutral-300">
+                Acoustic & Highlight Monitor
               </h2>
             </div>
-            <span className="text-xs text-slate-400 font-medium">
-              Click play to test your voice & live word highlighting
+            <span className="text-xs text-neutral-400 font-medium hidden sm:inline">
+              Audition voice pacing and watch the sliding highlight
             </span>
           </div>
 
-          {/* Interactive highlighted text frame */}
-          <div className="min-h-[76px] p-4 rounded-xl bg-[#090B12] border border-white/[0.06] flex flex-wrap gap-x-1.5 gap-y-1.5 items-center leading-relaxed text-base">
+          {/* Interactive highlighted text frame with sliding pill */}
+          <div
+            ref={benchContainerRef}
+            className="relative min-h-[84px] p-5 rounded-xl bg-[#090A0E] border border-white/[0.06] flex flex-wrap gap-x-1.5 gap-y-2 items-center leading-relaxed text-base overflow-hidden"
+          >
+            {/* Real sliding highlight pill with spring jiggle */}
+            <div
+              className={`absolute pointer-events-none rounded-[3px] bg-white z-0 ${
+                pillStyle.isLineBreak ? '' : 'larynx-bench-pill'
+              }`}
+              style={{
+                transform: pillStyle.transform,
+                width: pillStyle.width,
+                height: pillStyle.height,
+                opacity: pillStyle.opacity,
+                boxShadow: '0 2px 10px rgba(255, 255, 255, 0.25)',
+              }}
+            />
+
             {playgroundTokens.map((token, i) => {
               const isActive = playgroundActiveWordIndex === i;
               return (
                 <span
                   key={i}
-                  className={`px-1 rounded transition-all duration-100 ${
-                    isActive
-                      ? 'bg-white text-black shadow-md font-semibold rounded-[2px] scale-105'
-                      : 'text-slate-200'
+                  ref={(el) => {
+                    benchWordRefs.current[i] = el;
+                  }}
+                  className={`relative z-10 px-1 font-medium transition-colors duration-100 ${
+                    isActive ? 'text-black font-semibold' : 'text-neutral-300'
                   }`}
                 >
                   {token}
@@ -783,30 +846,30 @@ export const OptionsApp: React.FC = () => {
             })}
           </div>
 
-          <div className="mt-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-3 border-t border-white/[0.06]">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
             <input
               type="text"
               value={playgroundText}
               onChange={(e) => setPlaygroundText(e.target.value)}
-              placeholder="Type any custom sentence to test..."
-              className="flex-1 bg-[#161B29] border border-white/10 rounded-xl px-3.5 py-2 text-xs text-slate-300 placeholder:text-slate-500 focus:outline-none focus:border-[#FF5C29]/60 transition-colors"
+              placeholder="Type any test passage to audition..."
+              className="flex-1 bg-[#151821] border border-white/10 rounded-xl px-3.5 py-2 text-xs text-neutral-200 placeholder:text-neutral-500 focus:outline-none focus:border-[#FF5222]/60 transition-colors font-sans"
             />
             <button
               type="button"
               onClick={togglePlayground}
-              className={`flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold shadow-md transition-all shrink-0 ${
+              className={`flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold shadow-sm transition-all shrink-0 ${
                 playgroundPlaying
-                  ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-rose-600/30'
-                  : 'bg-[#FF5C29] hover:bg-[#FF7043] text-white shadow-[#FF5C29]/30 hover:scale-[1.02]'
+                  ? 'bg-rose-600 hover:bg-rose-500 text-white'
+                  : 'bg-[#FF5222] hover:bg-[#FF6638] text-white hover:brightness-105 active:scale-[0.98]'
               }`}
             >
               {playgroundPlaying ? (
                 <>
-                  <Pause size={14} /> Stop Speech
+                  <Pause size={13} /> Stop Audio
                 </>
               ) : (
                 <>
-                  <Play size={14} /> Listen & Watch Live
+                  <Play size={13} /> Test Highlight & Audio
                 </>
               )}
             </button>
@@ -865,8 +928,8 @@ export const OptionsApp: React.FC = () => {
                   : 'border-white/10 bg-[#141824] text-slate-300 hover:text-white hover:border-white/20'
               }`}
             >
-              <Sparkles size={13} />
-              Best Voices Only
+              <Filter size={13} />
+              Natural Voices Only
             </button>
           </div>
 
@@ -970,25 +1033,45 @@ export const OptionsApp: React.FC = () => {
         {/* ---------------------------------------------------------------- */}
         {/* SECTION 2: SPEECH PACE & SPEED (ACCURATELY CALIBRATED!)          */}
         {/* ---------------------------------------------------------------- */}
-        <section className="rounded-2xl bg-[#11141E] border border-white/[0.08] p-6 shadow-xl space-y-6">
+        <section className="rounded-2xl bg-[#111319] border border-white/[0.08] p-6 shadow-lg space-y-6">
           <div className="flex items-center justify-between gap-4 pb-3 border-b border-white/[0.06]">
             <div>
-              <h2 className="text-base font-semibold text-white flex items-center gap-2">
-                <Sliders size={18} className="text-[#FF5C29]" />
-                Speech Pace & Speed
+              <h2 className="text-sm font-semibold uppercase tracking-wider text-neutral-200 flex items-center gap-2">
+                <Sliders size={16} className="text-[#FF5222]" />
+                Speech Tempo & Pace
               </h2>
-              <p className="text-xs text-slate-400 mt-0.5">
-                Adjust how fast words are spoken. 1.00× represents the voice's default natural pace.
+              <p className="text-xs text-neutral-400 mt-0.5">
+                Adjust speaking pace. 1.00× represents the native cadence. Fine-tune with step buttons.
               </p>
             </div>
-            {/* Live Accurate Rate Badge */}
-            <div className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-[#FF5C29]/20 to-orange-500/10 border border-[#FF5C29]/30 text-right">
-              <span className="text-base font-bold text-white font-mono">
-                {settings.rate.toFixed(2)}×
-              </span>
-              <span className="block text-[11px] text-slate-400 font-mono">
-                ≈ {estimatedWpm} words/min
-              </span>
+            {/* Live Accurate Rate Controls */}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => handleRateChange(Math.max(0.5, Math.round((settings.rate - 0.1) * 20) / 20))}
+                title="Decrease speed by 0.1x"
+                aria-label="Decrease rate by 0.1x"
+                className="w-8 h-8 rounded-lg border border-white/10 bg-[#161822] text-neutral-300 hover:text-white hover:border-white/25 flex items-center justify-center transition-colors"
+              >
+                <Minus size={13} />
+              </button>
+              <div className="px-3 py-1 rounded-lg bg-[#161922] border border-white/10 text-right min-w-[88px]">
+                <span className="text-sm font-bold text-[#FF5222] font-mono tabular-nums">
+                  {settings.rate.toFixed(2)}×
+                </span>
+                <span className="block text-[10px] text-neutral-400 font-mono">
+                  ≈ {estimatedWpm} wpm
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => handleRateChange(Math.min(2.0, Math.round((settings.rate + 0.1) * 20) / 20))}
+                title="Increase speed by 0.1x"
+                aria-label="Increase rate by 0.1x"
+                className="w-8 h-8 rounded-lg border border-white/10 bg-[#161822] text-neutral-300 hover:text-white hover:border-white/25 flex items-center justify-center transition-colors"
+              >
+                <Plus size={13} />
+              </button>
             </div>
           </div>
 
@@ -1072,26 +1155,26 @@ export const OptionsApp: React.FC = () => {
         {/* ---------------------------------------------------------------- */}
         {/* SECTION 3: DELIVERY & PAUSES (NO CONFUSING DOUBLE LINES!)        */}
         {/* ---------------------------------------------------------------- */}
-        <section className="rounded-2xl bg-[#11141E] border border-white/[0.08] p-6 shadow-xl space-y-6">
+        <section className="rounded-2xl bg-[#111319] border border-white/[0.08] p-6 shadow-lg space-y-6">
           <div className="pb-3 border-b border-white/[0.06]">
-            <h2 className="text-base font-semibold text-white flex items-center gap-2">
-              <Headphones size={18} className="text-[#FF5C29]" />
-              Delivery & Sentence Breathing
+            <h2 className="text-sm font-semibold uppercase tracking-wider text-neutral-200 flex items-center gap-2">
+              <Headphones size={16} className="text-[#FF5222]" />
+              Natural Dictation & Breathing
             </h2>
-            <p className="text-xs text-slate-400 mt-0.5">
+            <p className="text-xs text-neutral-400 mt-0.5">
               Control pause duration between sentences and punctuation breathing for effortless listening.
             </p>
           </div>
 
           <div className="grid sm:grid-cols-2 gap-4">
             {/* Card A: Sentence Pause Gap */}
-            <div className="p-4 rounded-xl bg-[#141824] border border-white/[0.06] space-y-3">
+            <div className="p-4 rounded-xl bg-[#151821] border border-white/[0.06] space-y-3">
               <div className="flex items-center justify-between">
                 <div>
-                  <h3 className="text-sm font-semibold text-white">Sentence Pause</h3>
-                  <p className="text-xs text-slate-400 mt-0.5">Silence between sentences</p>
+                  <h3 className="text-xs font-semibold uppercase tracking-wider text-white">Sentence Rest</h3>
+                  <p className="text-xs text-neutral-400 mt-0.5">Breath gap between sentences</p>
                 </div>
-                <span className="font-mono text-xs font-bold px-2 py-1 rounded-md bg-[#FF5C29]/15 text-[#FF5C29]">
+                <span className="font-mono text-xs font-bold px-2 py-0.5 rounded-md bg-[#FF5222]/15 text-[#FF5222] border border-[#FF5222]/20">
                   {settings.sentenceGap} ms
                 </span>
               </div>
@@ -1099,7 +1182,7 @@ export const OptionsApp: React.FC = () => {
               <div className="relative flex items-center h-6">
                 <div className="absolute left-0 right-0 h-1.5 rounded-full bg-white/10 overflow-hidden">
                   <div
-                    className="h-full bg-[#FF5C29] rounded-full"
+                    className="h-full bg-[#FF5222] rounded-full"
                     style={{ width: `${(settings.sentenceGap / 600) * 100}%` }}
                   />
                 </div>
@@ -1115,18 +1198,18 @@ export const OptionsApp: React.FC = () => {
                 />
               </div>
 
-              <div className="flex justify-between text-[11px] font-mono text-slate-400">
+              <div className="flex justify-between text-[10px] font-mono text-neutral-400">
                 <span>0 ms (Instant)</span>
-                <span>300 ms</span>
+                <span>260 ms (Natural)</span>
                 <span>600 ms</span>
               </div>
             </div>
 
             {/* Card B: Pause on Punctuation */}
-            <div className="p-4 rounded-xl bg-[#141824] border border-white/[0.06] flex items-center justify-between gap-4">
+            <div className="p-4 rounded-xl bg-[#151821] border border-white/[0.06] flex items-center justify-between gap-4">
               <div>
-                <h3 className="text-sm font-semibold text-white">Pause on Punctuation</h3>
-                <p className="text-xs text-slate-400 mt-1 leading-relaxed">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-white">Punctuation Cadence</h3>
+                <p className="text-xs text-neutral-400 mt-1 leading-relaxed">
                   Adds subtle natural pauses at commas, colons, and semicolons instead of rushing clauses.
                 </p>
               </div>
@@ -1142,42 +1225,42 @@ export const OptionsApp: React.FC = () => {
         {/* ---------------------------------------------------------------- */}
         {/* SECTION 4: KEYBOARD SHORTCUT RECORDER                           */}
         {/* ---------------------------------------------------------------- */}
-        <section className="rounded-2xl bg-[#11141E] border border-white/[0.08] p-6 shadow-xl space-y-5">
+        <section className="rounded-2xl bg-[#111319] border border-white/[0.08] p-6 shadow-lg space-y-5">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-white/[0.06]">
             <div>
-              <h2 className="text-base font-semibold text-white flex items-center gap-2">
-                <Keyboard size={18} className="text-[#FF5C29]" />
-                Keyboard Shortcut
+              <h2 className="text-sm font-semibold uppercase tracking-wider text-neutral-200 flex items-center gap-2">
+                <Keyboard size={16} className="text-[#FF5222]" />
+                Trigger Key Chord
               </h2>
-              <p className="text-xs text-slate-400 mt-0.5">
-                Select any text and press this key chord to begin reading immediately.
+              <p className="text-xs text-neutral-400 mt-0.5">
+                Select text on any webpage and press this shortcut to trigger reading.
               </p>
             </div>
             <a
               href="chrome://extensions/shortcuts"
               target="_blank"
               rel="noopener noreferrer"
-              className="text-xs text-[#FF5C29] hover:underline flex items-center gap-1 self-start sm:self-auto font-medium"
+              className="text-xs text-[#FF5222] hover:underline flex items-center gap-1 self-start sm:self-auto font-medium"
             >
               <Command size={12} /> Chrome System Shortcuts
             </a>
           </div>
 
-          <div className="p-5 rounded-xl bg-[#141824] border border-white/[0.06] flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="p-5 rounded-xl bg-[#151821] border border-white/[0.06] flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
-              <div className="flex items-center gap-1.5 flex-wrap">
+              <div className="flex items-center gap-2 flex-wrap">
                 {parseShortcutKeys(shortcut).map((key, i) => (
                   <React.Fragment key={i}>
-                    <kbd className="px-3 py-1.5 rounded-lg bg-[#0E121B] border border-white/15 text-white font-mono text-xs font-semibold shadow-sm">
+                    <kbd className="kbd-cap px-3 py-1.5 rounded-lg text-neutral-100 font-mono text-xs font-semibold">
                       {key}
                     </kbd>
                     {i < parseShortcutKeys(shortcut).length - 1 && (
-                      <span className="text-slate-500 font-bold text-xs">+</span>
+                      <span className="text-neutral-500 font-bold text-xs">+</span>
                     )}
                   </React.Fragment>
                 ))}
               </div>
-              <p className="text-xs text-slate-400 mt-2">
+              <p className="text-xs text-neutral-400 mt-2">
                 Pressing while speech is playing toggles pause & resume.
               </p>
             </div>
@@ -1190,7 +1273,7 @@ export const OptionsApp: React.FC = () => {
                 }
                 className={`px-4 py-2 rounded-xl text-xs font-semibold border transition-all ${
                   recording
-                    ? 'border-[#FF5C29] bg-[#FF5C29]/20 text-[#FF5C29] animate-pulse ring-2 ring-[#FF5C29]/40'
+                    ? 'border-[#FF5222] bg-[#FF5222]/20 text-[#FF5222] animate-pulse ring-2 ring-[#FF5222]/40'
                     : 'border-white/10 bg-white/5 text-white hover:bg-white/10 hover:border-white/20'
                 }`}
               >

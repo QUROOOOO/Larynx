@@ -74,4 +74,21 @@
   .delay-50 { animation-delay: 50ms; }
   .delay-100 { animation-delay: 100ms; }
   .delay-150 { animation-delay: 150ms; }
+
+  .kbd-cap {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(180deg, #1C1F28 0%, #14161E 100%);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-bottom: 2px solid rgba(0, 0, 0, 0.6);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  }
+
+  .larynx-bench-pill {
+    transition: transform 0.13s cubic-bezier(0.2, 1.28, 0.4, 1),
+                width 0.13s cubic-bezier(0.2, 1.28, 0.4, 1),
+                height 0.10s ease,
+                opacity 0.08s ease;
+  }
 }

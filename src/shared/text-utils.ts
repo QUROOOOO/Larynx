@@ -9,8 +9,8 @@ export function splitIntoSentences(text: string): string[] {
   const placeholder = '\u0001';
   const processed = normalized.replace(abbreviationPattern, (match) => match.replace('.', placeholder));
   
-  // Split on sentence boundaries: punctuation followed by space and capital letter/quote/paren
-  const sentences = processed.split(/(?<=[.!?])\s+(?=[A-Z"'()])/);
+  // Split on sentence boundaries: punctuation followed by space and capital letter/digit/quote/paren
+  const sentences = processed.split(/(?<=[.!?])\s+(?=[A-Za-z0-9"'([])/);
   
   return sentences.map(s => s.replace(new RegExp(placeholder, 'g'), '.').trim()).filter(Boolean);
 }
@@ -260,6 +260,76 @@ export function prepareSpeech(source: string): SpeechPlan {
     spokenToSource.push(sourceIndex);
   };
 
+const ORDINALS: Record<string, string> = {
+  '1st': 'first', '2nd': 'second', '3rd': 'third', '4th': 'fourth', '5th': 'fifth',
+  '6th': 'sixth', '7th': 'seventh', '8th': 'eighth', '9th': 'ninth', '10th': 'tenth',
+  '11th': 'eleventh', '12th': 'twelfth', '13th': 'thirteenth', '14th': 'fourteenth',
+  '15th': 'fifteenth', '16th': 'sixteenth', '17th': 'seventeenth', '18th': 'eighteenth',
+  '19th': 'nineteenth', '20th': 'twentieth', '21st': 'twenty-first', '22nd': 'twenty-second',
+  '23rd': 'twenty-third', '30th': 'thirtieth', '31st': 'thirty-first', '100th': 'hundredth',
+};
+
+const SYMBOL_EXPANSIONS: Record<string, string[]> = {
+  '&': ['and'],
+  '+': ['plus'],
+  '=': ['equals'],
+  '#': ['number'],
+  'w/': ['with'],
+  'w/o': ['without'],
+  'e.g.': ['for', 'example,'],
+  'i.e.': ['that', 'is,'],
+  'vs.': ['versus'],
+  'vs': ['versus'],
+  'approx.': ['approximately'],
+  'min.': ['minutes'],
+  'sec.': ['seconds'],
+  'hr.': ['hours'],
+  'hrs.': ['hours'],
+};
+
+function expandDictation(value: string): string[] | null {
+  const sym = SYMBOL_EXPANSIONS[value.toLowerCase()];
+  if (sym) return sym;
+
+  // Ordinals: e.g. 1st, 2nd, 3rd (with optional trailing punctuation)
+  const ordMatch = value.match(/^(\d{1,3}(?:st|nd|rd|th))([.,!?;:]*)$/i);
+  if (ordMatch) {
+    const word = ORDINALS[ordMatch[1].toLowerCase()];
+    if (word) {
+      return [word + ordMatch[2]];
+    }
+  }
+
+  // Currency: $100, $5.50, €50, £100, ¥500, ₹1000
+  const currMatch = value.match(/^([$€£¥₹])(\d+(?:\.\d+)?)([KkMmBbTt]?)([.,!?;:]*)$/);
+  if (currMatch) {
+    const [, symbol, num, suffix, punct] = currMatch;
+    let currName = 'dollars';
+    if (symbol === '€') currName = 'euros';
+    else if (symbol === '£') currName = 'pounds';
+    else if (symbol === '¥') currName = 'yen';
+    else if (symbol === '₹') currName = 'rupees';
+
+    let multWord = '';
+    if (suffix.toUpperCase() === 'K') multWord = 'thousand';
+    else if (suffix.toUpperCase() === 'M') multWord = 'million';
+    else if (suffix.toUpperCase() === 'B') multWord = 'billion';
+
+    const words = [num];
+    if (multWord) words.push(multWord);
+    words.push(currName + punct);
+    return words;
+  }
+
+  // Percentage: 95%, 100%
+  const pctMatch = value.match(/^(\d+(?:\.\d+)?)%([.,!?;:]*)$/);
+  if (pctMatch) {
+    return [pctMatch[1], 'percent' + pctMatch[2]];
+  }
+
+  return null;
+}
+
   /**
    * Turns one scrubbed token value into its spoken pieces. A token that packs
    * an arrow (`word→word`) is split so each prose half is spoken and the
@@ -272,6 +342,19 @@ export function prepareSpeech(source: string): SpeechPlan {
     ARROW.lastIndex = 0;
     if (ARROW.test(value)) {
       value.split(ARROW).forEach((piece) => pronounce(piece, sourceIndex));
+      return;
+    }
+
+    // Convert isolated em-dashes and en-dashes to a clause breath pause comma
+    if (/^[—–-]+$/.test(value)) {
+      emit(',', sourceIndex);
+      return;
+    }
+
+    // Human dictation expansions (currencies, percentages, ordinals, symbols)
+    const expanded = expandDictation(value);
+    if (expanded && expanded.length > 0) {
+      expanded.forEach((w) => emit(w, sourceIndex));
       return;
     }
 
