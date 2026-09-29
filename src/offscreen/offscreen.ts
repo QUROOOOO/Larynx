@@ -179,30 +179,28 @@ function speakUtterance(
     const voice = findVoice(settings.voice);
     if (voice) utterance.voice = voice;
     utterance.rate = settings.rate;
-    utterance.pitch = 1.0;
+
+    // Human prosodic intonation shaping:
+    // Natural human readers modulate pitch and energy based on sentence punctuation
+    const trimmed = text.trim();
+    if (trimmed.endsWith('?')) {
+      utterance.pitch = 1.06; // Question rising inflection
+    } else if (trimmed.endsWith('!')) {
+      utterance.pitch = 1.03; // Emphatic declarative
+    } else if (/^\([^)]+\)$/.test(trimmed)) {
+      utterance.pitch = 0.95; // Soft parenthetical aside
+      utterance.rate = settings.rate * 0.96;
+    } else {
+      utterance.pitch = 1.0;
+    }
     utterance.volume = 1.0;
 
     const { words, offsets } = tokenizeWithOffsets(text);
 
-    /* -------------------------------------------------------------- *
-     * Word sequencer
-     *
-     * A single monotonic cursor (`emitted`) owns word progress. `boundary`
-     * events never move the cursor directly — they only push the clock
-     * forwards or backwards. That is what makes skipping impossible:
-     * every word is emitted exactly once, in order, no matter how late,
-     * sparse or bursty the engine's boundary events turn out to be.
-     *
-     * `charsPerMs` is learned from the gaps between consecutive boundary
-     * events, so the interval used between sparse events converges on the
-     * real speaking rate instead of a fixed guess.
-     * -------------------------------------------------------------- */
+    let hasBoundarySupport = false;
     let emitted = -1;
     let nextAt = 0;
     let handle: ReturnType<typeof setInterval> | null = null;
-    let adaptiveTempoMultiplier = 1.0;
-    let lastBoundaryIndex = -1;
-    let lastBoundaryTime = 0;
 
     const emit = (local: number) => {
       if (local < 0 || local >= words.length) return;
@@ -212,27 +210,27 @@ function speakUtterance(
       });
     };
 
-    /** Milliseconds to hold the cursor at word `i`. */
+    /** Milliseconds to hold the cursor at word `i` when using fallback pacing. */
     const paceFor = (i: number): number => {
       const word = words[i] || '';
-      // Realistic speech tempo: at 1.0x rate, modern TTS voices average ~200-220 WPM (~230ms per word)
-      const baseMs = (230 * adaptiveTempoMultiplier) / Math.max(0.2, settings.rate);
+      // Natural human reading rate: ~145 WPM (~410ms base per word at 1.0x rate)
+      const baseMs = 410 / Math.max(0.2, settings.rate);
       const cleanLen = word.replace(/[^\p{L}\p{N}]/gu, '').length;
 
-      // Realistic phonetic weighting: short grammatical words take ~130-170ms
+      // Realistic human syllable length weighting
       let factor = 1.0;
-      if (cleanLen <= 2) factor = 0.55;
-      else if (cleanLen <= 4) factor = 0.80;
-      else if (cleanLen <= 7) factor = 1.05;
-      else if (cleanLen <= 10) factor = 1.30;
-      else factor = 1.55;
+      if (cleanLen <= 2) factor = 0.65;
+      else if (cleanLen <= 4) factor = 0.88;
+      else if (cleanLen <= 7) factor = 1.10;
+      else if (cleanLen <= 10) factor = 1.35;
+      else factor = 1.60;
 
       let punctuationPause = 0;
       if (settings.pauseOnPunctuation) {
         if (/[,;—–]/.test(word)) {
-          punctuationPause = Math.round(35 / settings.rate);
+          punctuationPause = Math.round(140 / settings.rate);
         } else if (/[.!?:]/.test(word)) {
-          punctuationPause = Math.round(70 / settings.rate);
+          punctuationPause = Math.round(260 / settings.rate);
         }
       }
 
@@ -248,7 +246,11 @@ function speakUtterance(
     };
 
     const pump = () => {
-      if (isPaused) return;
+      if (isPaused || stopRequested) return;
+
+      // If the engine itself is firing real boundaries, the engine owns the cursor 100%!
+      // Never allow a blind timer to race or double-emit ahead of speech audio!
+      if (hasBoundarySupport) return;
 
       if (emitted >= words.length - 1) {
         stop();
@@ -264,12 +266,13 @@ function speakUtterance(
 
     utterance.onstart = () => {
       sendRunStamped({ type: 'SPEAKING_STARTED', payload: { sentenceIndex } });
-      emitted = -1;
-      adaptiveTempoMultiplier = 1.0;
-      lastBoundaryIndex = -1;
-      lastBoundaryTime = 0;
-      // Start immediately on word 0 once speech starts
-      nextAt = Date.now() + 25;
+      emitted = 0;
+      emit(0);
+      hasBoundarySupport = false;
+
+      // When speech starts, audio takes ~220ms to physically begin producing sound.
+      // Hold word 0 for startup latency plus word 0 duration before fallback timer can step.
+      nextAt = Date.now() + 220 + paceFor(0);
       handle = setInterval(pump, PUMP_TICK_MS);
       activePump = {
         rearm: () => {
@@ -289,31 +292,14 @@ function speakUtterance(
       const i = wordIndexAt(offsets, charIndex);
       if (i < 0 || i >= words.length) return;
 
-      // Monotonic progression: Never allow highlight to fall backwards
-      if (i <= emitted && emitted !== -1) return;
+      // The engine supports real boundary events! Lock highlight 100% to vocal audio!
+      hasBoundarySupport = true;
 
-      // Adapt tempo dynamically based on actual voice speed
-      const now = Date.now();
-      if (lastBoundaryIndex >= 0 && i > lastBoundaryIndex && lastBoundaryTime > 0) {
-        const actualDelta = now - lastBoundaryTime;
-        const wordDiff = i - lastBoundaryIndex;
-        const actualPerWord = actualDelta / wordDiff;
-        if (actualPerWord >= 80 && actualPerWord <= 600) {
-          const expectedPerWord = 230 / Math.max(0.2, settings.rate);
-          const ratio = actualPerWord / expectedPerWord;
-          if (ratio >= 0.4 && ratio <= 2.2) {
-            adaptiveTempoMultiplier = adaptiveTempoMultiplier * 0.7 + ratio * 0.3;
-          }
-        }
+      // Real acoustic event from the voice engine: advance strictly on boundary
+      if (i > emitted) {
+        emitted = i;
+        emit(emitted);
       }
-
-      lastBoundaryIndex = i;
-      lastBoundaryTime = now;
-
-      // Live synchronization: Immediately track the actual spoken word
-      emitted = i;
-      emit(emitted);
-      nextAt = now + paceFor(emitted);
     };
 
     utterance.onend = () => {

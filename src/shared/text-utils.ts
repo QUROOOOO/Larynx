@@ -9,8 +9,8 @@ export function splitIntoSentences(text: string): string[] {
   const placeholder = '\u0001';
   const processed = normalized.replace(abbreviationPattern, (match) => match.replace('.', placeholder));
   
-  // Split on sentence boundaries: punctuation followed by space and capital letter/digit/quote/paren
-  const sentences = processed.split(/(?<=[.!?])\s+(?=[A-Za-z0-9"'([])/);
+  // Split on sentence boundaries: punctuation (.!?) and clause separators (;) followed by space
+  const sentences = processed.split(/(?<=[.!?]|;)\s+(?=[A-Za-z0-9"'([—–])/);
   
   return sentences.map(s => s.replace(new RegExp(placeholder, 'g'), '.').trim()).filter(Boolean);
 }

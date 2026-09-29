@@ -123,6 +123,9 @@ function detectTheme(node?: Node | null): boolean {
   return false;
 }
 
+const PILL_ID = 'larynx-liquid-pill';
+let lastTop: number | null = null;
+
 function ensureStyles(): void {
   if (document.getElementById(STYLE_ID)) return;
   const style = document.createElement('style');
@@ -143,49 +146,61 @@ function ensureStyles(): void {
       display: inline !important;
       -webkit-box-decoration-break: clone;
       box-decoration-break: clone;
-      transition: background-color 0.10s ease, color 0.10s ease, transform 0.12s cubic-bezier(0.2, 1.25, 0.4, 1) !important;
+      transition: color 0.12s ease !important;
     }
     .${WORD_CLASS}.${ACTIVE_CLASS} {
       position: relative !important;
       z-index: 999995 !important;
-      display: inline-block !important;
-      animation: larynx-spring-pop 0.14s cubic-bezier(0.18, 1.25, 0.35, 1) both !important;
-      will-change: transform !important;
-    }
-    @keyframes larynx-spring-pop {
-      0% {
-        transform: scale(0.94) translateY(1px);
-      }
-      60% {
-        transform: scale(1.08) translateY(-0.5px);
-      }
-      100% {
-        transform: scale(1.03) translateY(0);
-      }
     }
     .${WORD_CLASS}::selection,
     .${GAP_CLASS}::selection {
       background-color: transparent !important;
       color: inherit !important;
+    }
+    #${PILL_ID} {
+      position: fixed !important;
+      top: 0 !important;
+      left: 0 !important;
+      pointer-events: none !important;
+      z-index: 999990 !important;
+      border-radius: 4px !important;
+      box-sizing: border-box !important;
+      will-change: transform, width, height, opacity !important;
+      transition: transform 0.15s cubic-bezier(0.25, 1, 0.5, 1),
+                  width 0.15s cubic-bezier(0.25, 1, 0.5, 1),
+                  height 0.10s ease,
+                  opacity 0.08s ease !important;
     }`;
   (document.head || document.documentElement).appendChild(style);
 }
 
+function getOrCreateLiquidPill(): HTMLElement {
+  let pill = document.getElementById(PILL_ID);
+  if (!pill) {
+    pill = document.createElement('div');
+    pill.id = PILL_ID;
+    if (isDarkTheme) {
+      pill.style.setProperty('background-color', '#FFFFFF', 'important');
+      pill.style.setProperty('box-shadow', '0 2px 10px rgba(255, 255, 255, 0.28)', 'important');
+    } else {
+      pill.style.setProperty('background-color', '#000000', 'important');
+      pill.style.setProperty('box-shadow', '0 2px 10px rgba(0, 0, 0, 0.22)', 'important');
+    }
+    document.documentElement.appendChild(pill);
+  }
+  return pill;
+}
+
 /**
- * Paints active word with self-contained negative-color styling and smooth spring jiggle.
- * Guarantees text is NEVER white-on-white or black-on-black.
+ * Paints active word with liquid sliding pill across the text.
+ * Completely eliminates any jiggle/scaling for a fluid, natural glide.
  */
 function paintWord(spans: HTMLElement[], index: number): void {
   if (index < 0 || index >= spans.length) return;
   if (currentIndex >= 0 && currentIndex < spans.length && currentIndex !== index) {
     const prev = spans[currentIndex];
     prev.classList.remove(ACTIVE_CLASS);
-    prev.style.removeProperty('background-color');
     prev.style.removeProperty('color');
-    prev.style.removeProperty('padding');
-    prev.style.removeProperty('margin');
-    prev.style.removeProperty('border-radius');
-    prev.style.removeProperty('box-shadow');
     prev.style.removeProperty('position');
     prev.style.removeProperty('z-index');
   }
@@ -195,28 +210,41 @@ function paintWord(spans: HTMLElement[], index: number): void {
 
   el.classList.add(ACTIVE_CLASS);
 
-  // Exact negative color applied directly to el:
-  // Light page (dark text): Solid Black badge with Solid White text
-  // Dark page (light text): Solid White badge with Solid Black text
+  // Negative text color contrasting with the liquid pill directly behind it
   if (isDarkTheme) {
-    el.style.setProperty('background-color', '#FFFFFF', 'important');
     el.style.setProperty('color', '#000000', 'important');
-    el.style.setProperty('box-shadow', '0 2px 8px rgba(255, 255, 255, 0.3)', 'important');
   } else {
-    el.style.setProperty('background-color', '#000000', 'important');
     el.style.setProperty('color', '#FFFFFF', 'important');
-    el.style.setProperty('box-shadow', '0 2px 8px rgba(0, 0, 0, 0.25)', 'important');
   }
-
-  el.style.setProperty('padding', '2px 4px', 'important');
-  el.style.setProperty('margin', '0 -1px', 'important');
-  el.style.setProperty('border-radius', '4px', 'important');
   el.style.setProperty('position', 'relative', 'important');
   el.style.setProperty('z-index', '999995', 'important');
   currentIndex = index;
 
   try {
+    const pill = getOrCreateLiquidPill();
     const rect = el.getBoundingClientRect();
+    const targetX = Math.round(rect.left - 2);
+    const targetY = Math.round(rect.top - 1);
+    const targetW = Math.max(6, Math.round(rect.width + 4));
+    const targetH = Math.max(12, Math.round(rect.height + 2));
+
+    const isLineBreak = lastTop !== null && Math.abs(targetY - lastTop) > 8;
+    if (isLineBreak || lastTop === null) {
+      pill.style.setProperty('transition', 'none', 'important');
+      pill.style.setProperty('transform', `translate3d(${targetX}px, ${targetY}px, 0)`, 'important');
+      pill.style.setProperty('width', `${targetW}px`, 'important');
+      pill.style.setProperty('height', `${targetH}px`, 'important');
+      pill.style.setProperty('opacity', '1', 'important');
+      void pill.offsetWidth;
+      pill.style.removeProperty('transition');
+    } else {
+      pill.style.setProperty('transform', `translate3d(${targetX}px, ${targetY}px, 0)`, 'important');
+      pill.style.setProperty('width', `${targetW}px`, 'important');
+      pill.style.setProperty('height', `${targetH}px`, 'important');
+      pill.style.setProperty('opacity', '1', 'important');
+    }
+    lastTop = targetY;
+
     const inView =
       rect.top >= 20 &&
       rect.bottom <= (window.innerHeight || document.documentElement.clientHeight) - 20;
@@ -419,17 +447,15 @@ if (!window.__larynx) {
       const prev = state.wordSpans[currentIndex];
       if (prev) {
         prev.classList.remove(ACTIVE_CLASS);
-        prev.style.removeProperty('background-color');
         prev.style.removeProperty('color');
-        prev.style.removeProperty('padding');
-        prev.style.removeProperty('margin');
-        prev.style.removeProperty('border-radius');
-        prev.style.removeProperty('box-shadow');
         prev.style.removeProperty('position');
         prev.style.removeProperty('z-index');
       }
     }
     currentIndex = -1;
+    lastTop = null;
+    const pill = document.getElementById(PILL_ID);
+    if (pill?.parentNode) pill.parentNode.removeChild(pill);
     if (state.injected.length > 0) {
       unwrap(state.injected);
       state.injected = [];

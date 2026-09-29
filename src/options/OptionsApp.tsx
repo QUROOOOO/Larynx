@@ -307,6 +307,59 @@ export const OptionsApp: React.FC = () => {
   const [playgroundPlaying, setPlaygroundPlaying] = useState(false);
   const [playgroundActiveWordIndex, setPlaygroundActiveWordIndex] = useState<number | null>(null);
   const playgroundTokens = useMemo(() => playgroundText.match(/\S+/g) ?? [], [playgroundText]);
+  const playgroundContainerRef = useRef<HTMLDivElement>(null);
+  const wordRefs = useRef<(HTMLSpanElement | null)[]>([]);
+  const [pillRect, setPillRect] = useState<{
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+    opacity: number;
+    noTransition?: boolean;
+  }>({
+    left: 0,
+    top: 0,
+    width: 0,
+    height: 0,
+    opacity: 0,
+    noTransition: false,
+  });
+  const lastPlaygroundTop = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (
+      playgroundActiveWordIndex === null ||
+      !wordRefs.current[playgroundActiveWordIndex] ||
+      !playgroundContainerRef.current
+    ) {
+      setPillRect((prev) => ({ ...prev, opacity: 0 }));
+      lastPlaygroundTop.current = null;
+      return;
+    }
+    const el = wordRefs.current[playgroundActiveWordIndex];
+    const container = playgroundContainerRef.current;
+    if (!el || !container) return;
+    const elRect = el.getBoundingClientRect();
+    const cRect = container.getBoundingClientRect();
+
+    const targetX = Math.round(elRect.left - cRect.left - 2);
+    const targetY = Math.round(elRect.top - cRect.top - 1);
+    const targetW = Math.max(6, Math.round(elRect.width + 4));
+    const targetH = Math.max(12, Math.round(elRect.height + 2));
+
+    const isLineBreak =
+      lastPlaygroundTop.current !== null && Math.abs(targetY - lastPlaygroundTop.current) > 8;
+
+    setPillRect({
+      left: targetX,
+      top: targetY,
+      width: targetW,
+      height: targetH,
+      opacity: 1,
+      noTransition: isLineBreak || lastPlaygroundTop.current === null,
+    });
+    lastPlaygroundTop.current = targetY;
+  }, [playgroundActiveWordIndex]);
 
   // Shortcut recorder state
   const [shortcut, setShortcut] = useState('');
@@ -498,6 +551,19 @@ export const OptionsApp: React.FC = () => {
       if (voice) u.voice = voice;
       u.rate = settings.rate;
 
+      // Human prosodic intonation shaping
+      const trimmed = sentence.trim();
+      if (trimmed.endsWith('?')) {
+        u.pitch = 1.06; // Question rising inflection
+      } else if (trimmed.endsWith('!')) {
+        u.pitch = 1.03; // Emphatic declarative
+      } else if (/^\([^)]+\)$/.test(trimmed)) {
+        u.pitch = 0.95; // Soft parenthetical aside
+        u.rate = Math.max(0.5, settings.rate * 0.96);
+      } else {
+        u.pitch = 1.0;
+      }
+
       // Tokenize offsets for word tracking
       const pattern = /\S+/g;
       const offsets: number[] = [];
@@ -509,11 +575,18 @@ export const OptionsApp: React.FC = () => {
       const currentOffset = globalWordOffset;
       let timer: ReturnType<typeof setInterval> | null = null;
       let localIndex = -1;
+      let hasBoundarySupport = false;
 
-      const baseMs = 230 / Math.max(0.2, settings.rate);
+      // Calibrated natural reading rate (~145 WPM, 410ms base per word)
+      const baseMs = 410 / Math.max(0.2, settings.rate);
       let nextWordAt = Date.now();
 
       const stepPump = () => {
+        // If the engine fires real boundaries, never allow a timer to advance or race ahead
+        if (hasBoundarySupport) {
+          if (timer) clearInterval(timer);
+          return;
+        }
         if (localIndex >= sentenceWords.length - 1) {
           if (timer) clearInterval(timer);
           return;
@@ -524,24 +597,42 @@ export const OptionsApp: React.FC = () => {
           const w = sentenceWords[localIndex] || '';
           const len = w.replace(/[^\p{L}\p{N}]/gu, '').length;
           let factor = 1.0;
-          if (len <= 2) factor = 0.55;
-          else if (len <= 4) factor = 0.80;
-          else if (len <= 7) factor = 1.05;
-          else if (len <= 10) factor = 1.30;
-          else factor = 1.55;
-          nextWordAt = Date.now() + Math.round(baseMs * factor);
+          if (len <= 2) factor = 0.65;
+          else if (len <= 4) factor = 0.88;
+          else if (len <= 7) factor = 1.10;
+          else if (len <= 10) factor = 1.35;
+          else factor = 1.60;
+
+          let punctuationPause = 0;
+          if (settings.pauseOnPunctuation) {
+            if (/[,;—–]/.test(w)) {
+              punctuationPause = Math.round(140 / settings.rate);
+            } else if (/[.!?:]/.test(w)) {
+              punctuationPause = Math.round(260 / settings.rate);
+            }
+          }
+
+          nextWordAt = Date.now() + Math.round(baseMs * factor) + punctuationPause;
         }
       };
 
       u.onstart = () => {
-        localIndex = -1;
-        nextWordAt = Date.now();
+        localIndex = 0;
+        setPlaygroundActiveWordIndex(currentOffset + 0);
+        hasBoundarySupport = false;
+        // Start latency padding to prevent premature highlight jumping
+        nextWordAt = Date.now() + 220 + Math.round(baseMs * 0.9);
         timer = setInterval(stepPump, 20);
       };
 
       u.onboundary = (e) => {
         const ev = e as SpeechSynthesisEvent;
         if (ev.name && ev.name !== 'word') return;
+        hasBoundarySupport = true;
+        if (timer) {
+          clearInterval(timer);
+          timer = null;
+        }
         const charIdx = ev.charIndex;
         if (typeof charIdx === 'number' && offsets.length > 0) {
           let found = 0;
@@ -552,15 +643,6 @@ export const OptionsApp: React.FC = () => {
           if (found > localIndex) {
             localIndex = found;
             setPlaygroundActiveWordIndex(currentOffset + localIndex);
-            const w = sentenceWords[localIndex] || '';
-            const len = w.replace(/[^\p{L}\p{N}]/gu, '').length;
-            let factor = 1.0;
-            if (len <= 2) factor = 0.55;
-            else if (len <= 4) factor = 0.80;
-            else if (len <= 7) factor = 1.05;
-            else if (len <= 10) factor = 1.30;
-            else factor = 1.55;
-            nextWordAt = Date.now() + Math.round(baseMs * factor);
           }
         }
       };
@@ -774,19 +856,36 @@ export const OptionsApp: React.FC = () => {
             </span>
           </div>
 
-          {/* Interactive highlighted text frame with direct negative-contrast badge */}
+          {/* Interactive highlighted text frame with liquid sliding pill */}
           <div
+            ref={playgroundContainerRef}
             className="relative min-h-[84px] p-5 rounded-xl bg-[#0D0E12] border border-white/[0.06] flex flex-wrap gap-x-1.5 gap-y-2 items-center leading-relaxed text-base overflow-hidden"
           >
+            {/* Liquid sliding pill */}
+            <div
+              className={`pointer-events-none absolute rounded bg-white shadow-md shadow-white/20 will-change-transform ${
+                pillRect.noTransition
+                  ? ''
+                  : 'transition-[transform,width,height] duration-150 ease-[cubic-bezier(0.25,1,0.5,1)]'
+              }`}
+              style={{
+                transform: `translate3d(${pillRect.left}px, ${pillRect.top}px, 0)`,
+                width: `${pillRect.width}px`,
+                height: `${pillRect.height}px`,
+                opacity: pillRect.opacity,
+                zIndex: 5,
+              }}
+            />
             {playgroundTokens.map((token, i) => {
               const isActive = playgroundActiveWordIndex === i;
               return (
                 <span
                   key={i}
-                  className={`inline-block rounded px-1.5 py-0.5 font-medium transition-all duration-100 ${
-                    isActive
-                      ? 'bg-white text-black font-semibold shadow-md shadow-white/20 scale-[1.04]'
-                      : 'text-neutral-300'
+                  ref={(el) => {
+                    wordRefs.current[i] = el;
+                  }}
+                  className={`relative z-10 inline-block rounded px-1.5 py-0.5 font-medium transition-colors duration-150 ${
+                    isActive ? 'text-black font-semibold' : 'text-neutral-300'
                   }`}
                 >
                   {token}
