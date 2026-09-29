@@ -1,3 +1,4 @@
+// Larynx — Primary Vite configuration for MV3 extension bundling
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';

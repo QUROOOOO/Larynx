@@ -1,4 +1,5 @@
 {
+  // Larynx — Node TypeScript configuration for Vite toolchain
   "compilerOptions": {
     "composite": true,
     "skipLibCheck": true,

@@ -1,4 +1,4 @@
-// Separate build for the content script.
+// Larynx — Content script IIFE Vite configuration
 // chrome.scripting.executeScript executes files as CLASSIC scripts,
 // so content.js must be a single self-contained IIFE with no imports.
 import { defineConfig } from 'vite';

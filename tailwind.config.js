@@ -1,3 +1,4 @@
+// Larynx — Tailwind CSS theme configuration
 /** @type {import('tailwindcss').Config} */
 export default {
   content: [

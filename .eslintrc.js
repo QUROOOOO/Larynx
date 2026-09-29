@@ -1,3 +1,4 @@
+// Larynx — ESLint configuration
 /* eslint-env node */
 
 module.exports = {
