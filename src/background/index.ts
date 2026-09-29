@@ -48,13 +48,20 @@ async function notifyContent(message: ContentMessage, frameId?: number): Promise
   try {
     await sendToContentScript(tabId, message, frameId);
   } catch {
-    // Content script not injected in this tab (or frame)
+    // If targeted frame send failed, broadcast to tab
+    try {
+      await sendToContentScript(tabId, message);
+    } catch {
+      // Content script not injected in this tab
+    }
   }
 }
 
 /** Strips the word highlight from one specific tab, ignoring delivery failures. */
 function clearTabHighlight(tabId: number, frameId?: number): void {
-  void sendToContentScript(tabId, { type: 'SPEAK_ENDED' }, frameId).catch(() => {});
+  void sendToContentScript(tabId, { type: 'SPEAK_ENDED' }, frameId)
+    .catch(() => sendToContentScript(tabId, { type: 'SPEAK_ENDED' }))
+    .catch(() => {});
 }
 
 /**

@@ -4,7 +4,7 @@
 // (not per-sentence) so the content script can highlight against its flat list of
 // word spans without having to re-split the text itself.
 
-import { splitIntoSentences, estimateDuration } from '../shared/text-utils';
+import { splitIntoSentences } from '../shared/text-utils';
 import {
   OffscreenMessage,
   OffscreenResponse,
@@ -29,7 +29,6 @@ const OFFSCREEN_MESSAGE_TYPES = new Set<OffscreenMessage['type']>([
 
 const PUMP_TICK_MS = 16;
 const MIN_WORD_INTERVAL_MS = 55;
-const CATCHUP_STEP_MS = 20;
 const RESTART_WAIT_MS = 2000;
 const RESUME_DELAY_MS = 120;
 
@@ -186,11 +185,6 @@ function speakUtterance(
      * -------------------------------------------------------------- */
     let emitted = -1;
     let nextAt = 0;
-    let stepMs = 0;
-    let charsPerMs = 0;
-    let hint = 0;
-    let lastBoundaryAt = 0;
-    let lastBoundaryIndex = 0;
     let handle: ReturnType<typeof setInterval> | null = null;
 
     const emit = (local: number) => {
@@ -204,13 +198,10 @@ function speakUtterance(
     /** Milliseconds to hold the cursor at word `i`. */
     const paceFor = (i: number): number => {
       const word = words[i] || '';
-      if (charsPerMs > 0) {
-        return Math.max(MIN_WORD_INTERVAL_MS, (word.length + 1) / charsPerMs);
-      }
-      return Math.max(
-        MIN_WORD_INTERVAL_MS,
-        estimateDuration(`${word} `, settings.rate) * 1000,
-      );
+      // Average conversational speech at 1.0x rate is ~165 WPM (~360ms per standard 5-character word)
+      const baseMs = 360 / Math.max(0.2, settings.rate);
+      const charFactor = Math.max(0.65, Math.min(1.75, (word.length + 1) / 5));
+      return Math.max(MIN_WORD_INTERVAL_MS, Math.round(baseMs * charFactor));
     };
 
     const stop = () => {
@@ -232,20 +223,13 @@ function speakUtterance(
 
       emitted++;
       emit(emitted);
-
-      // Far behind the engine's own signal: sprint forward, but still one word
-      // per step, so nothing is skipped and nothing is highlighted twice.
-      const behind = hint - 1 - emitted;
-      stepMs = behind > 2 ? CATCHUP_STEP_MS : paceFor(emitted);
-      nextAt = now + stepMs;
+      nextAt = now + paceFor(emitted);
     };
 
     utterance.onstart = () => {
       sendRunStamped({ type: 'SPEAKING_STARTED', payload: { sentenceIndex } });
       emitted = -1;
-      stepMs = paceFor(0);
-      nextAt = Date.now() + stepMs;
-      hint = 1;
+      nextAt = Date.now();
       handle = setInterval(pump, PUMP_TICK_MS);
       activePump = {
         rearm: () => {
@@ -255,35 +239,20 @@ function speakUtterance(
     };
 
     utterance.onboundary = (event) => {
-      const charIndex = (event as SpeechSynthesisEvent).charIndex;
+      const boundaryEvent = event as SpeechSynthesisEvent;
+      // Filter out non-word boundaries (Chrome fires 'sentence' with charIndex: 0, which would reset position)
+      if (boundaryEvent.name && boundaryEvent.name !== 'word') return;
+
+      const charIndex = boundaryEvent.charIndex;
       if (typeof charIndex !== 'number' || offsets.length === 0) return;
 
       const i = wordIndexAt(offsets, charIndex);
-      const now = Date.now();
+      if (i < 0 || i >= words.length) return;
 
-      // Learn the real speaking rate from the gap since the previous boundary.
-      // Pauses are self-correcting here: the frozen interval simply produces a
-      // low average, and the next few boundaries pull it back up.
-      const deltaChars = charIndex - lastBoundaryIndex;
-      const deltaMs = now - lastBoundaryAt;
-      if (lastBoundaryAt > 0 && deltaChars > 0 && deltaMs > 20) {
-        charsPerMs = deltaChars / deltaMs;
-      }
-      lastBoundaryAt = now;
-      lastBoundaryIndex = charIndex;
-
-      if (i > hint - 1) hint = i + 1;
-
-      if (handle === null) return;
-
-      if (emitted >= i) {
-        // We over-ran the engine: give the surplus words their time back.
-        nextAt = now + (emitted - i + 1) * paceFor(i);
-      } else {
-        // We are behind: the next word goes out as soon as the engine reaches it.
-        nextAt = now;
-        stepMs = paceFor(emitted + 1);
-      }
+      // Real engine boundary confirmed: snap directly to this word
+      emitted = i;
+      emit(emitted);
+      nextAt = Date.now() + paceFor(emitted);
     };
 
     /** Emits any word the engine never reached, so the tail is never left dark. */

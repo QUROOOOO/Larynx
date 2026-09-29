@@ -1,125 +1,108 @@
 # Larynx
 
-> Select any text on the web, hear it in a natural voice — instantly.
+> **Select any text on the web, hear it in a natural voice — instantly.**
 
-A lightweight, privacy-first Chrome extension for text-to-speech. Zero dependencies, zero cost — uses the browser's built-in Web Speech API.
+Larynx is a lightweight, privacy-first Chrome extension that transforms any highlighted webpage text into natural, spoken audio with live word-by-word highlighting. Zero cloud subscriptions, zero tracking, and zero background memory when idle.
 
-## Features
+---
 
-- **Instant TTS**: Select text → press `Ctrl+Shift+S` (or `Cmd+Shift+S`) → hear it immediately
-- **Negative-Blend Word Highlighting**: In-place dynamic word inversion (`mix-blend-mode: difference`) tracking speech in real-time on any webpage theme without reflow or layout shifts
-- **Lossless DOM Restoration**: Injected word spans preserve the host page byte-for-byte; cleanly unwrapped when speech completes
-- **Smart Speech Normalization**: Excludes noisy markup, bare URLs, emails, citations `[1]`, and structural arrows while accurately mapping spoken syllables back to the original source text
-- **Multi-Frame & Iframe Support**: Automatically detects selections inside iframes and routes playback highlights directly to the matching frame
-- **Zero-Friction Shortcut Toggle**: Shortcut triggers speech when text is selected, or toggles pause/resume while speaking
-- **Sentence-Aware Breathing**: Natural, configurable pauses between sentences for maximum comprehension
-- **Editorial Options Specimen**: Type-specimen sheet options UI with live boundary cadence visualization, voice quality scoring ("Best"), pace/WPM estimator, and shortcut recorder
-- **Settings Sync**: Preferences synced across devices via `chrome.storage.sync`
-- **Zero Idle Overhead**: Event-driven Manifest V3 service worker and on-demand offscreen document that closes after 30 seconds idle
+## What It Is
 
-## Install (Development)
+When reading long articles, documentation, academic papers, or emails, listening while following along improves comprehension, reading speed, and focus.
 
-```bash
-# Clone and install
-git clone https://github.com/QUROOOOO/Larynx.git
-cd Larynx
-npm install
+Traditional text-to-speech tools are clunky: they inject disruptive overlay widgets, require expensive monthly subscriptions, send your browsing data to remote servers, or break when reading symbols, citations, and complex page layouts.
 
-# Build extension
-npm run build
+**Larynx eliminates all friction:**
+- **Zero-Latency Audio**: Select text, press `Ctrl+Shift+S` (`Cmd+Shift+S` on macOS), and hear it read aloud immediately.
+- **In-Place Word Highlighting**: Each word lights up in real-time as it is spoken, keeping your eyes perfectly locked to the text without shifting page layout or conflicting with dark/light themes.
+- **100% Private & Local**: Powered by your browser's built-in Web Speech synthesis engine. Audio is synthesized entirely on your device. No microphones, no recordings, no cloud APIs, and no telemetry.
+- **Smart Text Normalization**: Automatically skips noisy URLs, emails, citations (`[1, 2]`), superscript numbers, and layout arrows, while keeping the visual highlighter locked to the source text.
+- **Zero Idle Memory**: Built strictly on Manifest V3. The service worker is purely event-driven, and audio workers self-terminate after 30 seconds of inactivity.
 
-# Load in Chrome
-1. Open chrome://extensions/
-2. Enable "Developer mode"
-3. Click "Load unpacked"
-4. Select the `dist/` folder
-```
+---
 
-## Usage
+## How It Works
 
-1. Select any text on any webpage.
-2. Press `Ctrl+Shift+S` (`Cmd+Shift+S` on macOS).
-3. The selected passage begins playing aloud, highlighting word-by-word with high-contrast inverted styling.
-4. Press the shortcut again while playing to **pause / resume**.
-5. Customize voice, pace, punctuation pauses, or keyboard shortcuts anytime via extension **Options**.
-
-## Architecture
+### 1. User Experience Workflow
 
 ```
-┌─────────────────────────────────┐     ┌──────────────────────────────────┐     ┌─────────────────────────────────┐
-│     Background Service Worker   │────▶│       Offscreen Document         │────▶│       Web Speech API            │
-│  (Event-driven, frame router)   │     │ (Speech queue, clock, boundary)  │     │   (window.speechSynthesis)      │
-└────────────────┬────────────────┘     └────────────────┬─────────────────┘     └─────────────────────────────────┘
-                 │                                       │
-                 ▼                                       │ (Run-stamped progress)
-┌─────────────────────────────────┐                      │
-│        Content Script           │◀─────────────────────┘
-│ (Injected on-demand per frame)  │
-│ - Negative-blend word highlight │
-│ - Speech-to-source mapping      │
-│ - Lossless DOM unwrapping       │
-└─────────────────────────────────┘
+1. Select Text              2. Press Shortcut           3. Follow Along
+┌────────────────────────┐  ┌────────────────────────┐  ┌────────────────────────┐
+│ The quick brown fox    │  │   [Ctrl + Shift + S]   │  │ The [quick] brown fox  │
+│ jumps over the lazy dog│─▶│                        │─▶│ jumps over the lazy dog│
+└────────────────────────┘  └────────────────────────┘  └────────────────────────┘
+                                                         (Spoken word highlights)
 ```
 
-- **Background Service Worker**: Event-driven only — wakes on `chrome.commands` and messages, probes active frame selections, coordinates run IDs to discard stale messages, and manages offscreen document lifecycle.
-- **Offscreen Document**: Created on-demand for audio synthesis, runs speech utterances sentence-by-sentence with monotonic clock drift compensation, and auto-closes after 30s idle.
-- **Content Script**: Programmatically injected into active frames, wraps words losslessly into spans, executes negative-blend highlighting, and restores the DOM cleanly upon completion.
-- **Options Sheet**: Editorial dark UI specimen built with React and Tailwind CSS v4, supporting live voice cadence profiling, language filtering, and browser shortcut binding.
+1. **Highlight any text** on any website or iframe.
+2. **Press `Ctrl+Shift+S`** (or `Cmd+Shift+S` on macOS).
+3. **Listen & Follow**: The extension speaks the selection, illuminating each spoken word in real-time.
+4. **Pause / Resume**: Press the same shortcut while playing to toggle pause/resume. Selecting new text immediately switches to reading the new selection.
 
-## Performance Budget
+---
 
-| Metric | Target |
-|--------|--------|
-| JS Bundle (base) | < 150 KB |
-| Service worker | Event-driven, no persistent loops |
-| Content script | Injected on-demand only |
-| Offscreen doc | Auto-closes after 30s idle |
-| DOM safety | Full byte-for-byte unwrap via `parent.normalize()` |
-
-## Tech Stack
-
-- **Vite 5** + **React 18** + **TypeScript**
-- **Tailwind CSS v4** (Editorial dark aesthetic)
-- **Lucide React** icons
-- **Manifest V3**
-
-## Project Structure
+### 2. Architecture & System Flow
 
 ```
-src/
-├── background/     # Event-driven service worker & frame routing
-├── content/        # Injected content script & negative-blend word highlighter
-├── offscreen/      # Offscreen document & SpeechSynthesis engine
-├── options/        # Options specimen page (React + Tailwind v4)
-├── shared/         # Messaging, storage sync, text normalization & types
-└── styles/         # Global styling & Tailwind v4 theme tokens
+                                  CHROME EXTENSION PIPELINE
+                                  
+  ┌────────────────────────┐
+  │   User Selects Text    │
+  └───────────┬────────────┘
+              │ Shortcut Pressed (Ctrl+Shift+S)
+              ▼
+  ┌────────────────────────────────────────────────────────┐
+  │              Background Service Worker                 │
+  │  - Event-driven (MV3) with zero persistent idle loops  │
+  │  - Identifies active tab & targeted frame (iframes)    │
+  │  - Spawns offscreen audio document on-demand           │
+  │  - Stamps monotonic runId to isolate active playback   │
+  └───────────┬────────────────────────────────────────────┘
+              │
+      ┌───────┴────────────────────────────────┐
+      ▼                                        ▼
+┌───────────────────────────┐    ┌───────────────────────────────────┐
+│     Content Script        │    │        Offscreen Document         │
+│  (Injected into Frame)    │    │       (Audio Synthesis Engine)    │
+├───────────────────────────┤    ├───────────────────────────────────┤
+│ • Clones exact text range │    │ • Splits text into sentences      │
+│ • Wraps words into spans  │    │ • Tracks word boundary timings    │
+│ • Applies accent highlight│    │ • Fallback tempo clock if engine  │
+│ • Lossless DOM unwrap on  │    │   provides sparse boundary events │
+│   speech end or cancel    │    │ • Auto-closes after 30s idle      │
+└─────────────▲─────────────┘    └─────────────────┬─────────────────┘
+              │                                    │
+              └──────── Word Progress Event ───────┘
 ```
 
-## Development
+#### How the Components Interact:
 
-```bash
-# Watch mode (rebuilds on change)
-npm run dev
+1. **Selection Capture & Range Protection**:
+   The content script detects the user's highlighted text range across any page or iframe. Before touching the DOM, it snapshots character boundaries and normalizes text for speech (cleaning bare URLs, bracketed citations, and acronyms).
 
-# Production build
-npm run build
+2. **DOM Spanning & Highlighting**:
+   The selected range is wrapped into discrete word elements without changing the host page's formatting, font size, or line height. When an audio progress event arrives, the active word span receives a vibrant glowing accent style.
 
-# Type checking
-npm run typecheck
+3. **Offscreen Audio Synthesis**:
+   Manifest V3 service workers cannot access audio output directly. Larynx uses an on-demand Chrome Offscreen Document hosting the browser's `SpeechSynthesis` engine. Speech is processed sentence-by-sentence to maintain natural cadence and intonation contours.
 
-# Linting
-npm run lint
-```
+4. **Speech-to-Source Synchronization**:
+   Speech engines can emit irregular boundary timings depending on the operating system voice. Larynx features a monotonic word sequencer that pairs real engine boundary events with dynamic rate estimation, ensuring the highlight never gets stuck or skips words.
 
-## Roadmap
+5. **Lossless Restoration**:
+   Once speech finishes or is interrupted, all injected spans are automatically unwrapped and adjacent text nodes are unified via DOM normalization. The webpage is restored byte-for-byte to its original condition.
 
-- [x] Instant text-to-speech with shortcut controls
-- [x] In-place negative-blend word-level highlighting
-- [x] Normalization & speech-to-source bidirectional mapping
-- [x] Iframe and multi-frame selection awareness
-- [ ] Milestone 2: Local neural voices (Piper / Kokoro WASM)
-- [ ] Milestone 3: Cloud TTS integration (ElevenLabs, OpenAI, Azure)
+---
 
-## License
+## Controls & Customization
 
-MIT
+Customize everything via the built-in Options page:
+
+| Feature | Description |
+| :--- | :--- |
+| **Voice Selection** | Choose from any installed system or browser voice. Natural/Neural voices are automatically detected and ranked. |
+| **Pace Control** | Calibrated rate slider (0.5× to 2.0×) with live words-per-minute (WPM) estimation and quick preset buttons. |
+| **Sentence Breathing** | Fine-tune pause duration between sentences (0 to 600 ms) for optimal listening comprehension. |
+| **Punctuation Breathing** | Toggle natural micro-pauses at commas, colons, and semicolons. |
+| **Custom Shortcut** | Remap the reading key chord directly within the options page or via `chrome://extensions/shortcuts`. |
+| **Interactive Test Bench**| Preview your active voice, speed, and real-time word highlighting directly inside the options interface. |

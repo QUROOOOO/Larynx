@@ -11,14 +11,8 @@ const GAP_CLASS = 'larynx-gap';
 const ACTIVE_CLASS = 'larynx-word-active';
 const STYLE_ID = 'larynx-word-styles';
 
-/** Delay between two words while catching up across a gap. */
-const CATCHUP_STEP_MS = 34;
-
 /** Index of the word currently carrying the active class, or -1. */
 let currentIndex = -1;
-
-/** Pending catch-up step, if one is in flight. */
-let catchUpTimer: ReturnType<typeof setTimeout> | null = null;
 
 /**
  * Disarms the selection-guard listener installed while a highlight is up.
@@ -93,19 +87,23 @@ function ensureStyles(): void {
       outline: none !important;
       border: none !important;
       text-decoration: none !important;
-      /* A flat rectangle: no padding, no margin, never reflow the page. */
-      padding: 0 !important;
+      padding: 0 1px !important;
       margin: 0 !important;
-      border-radius: 0 !important;
-      mix-blend-mode: normal !important;
+      border-radius: 4px !important;
       opacity: 1 !important;
+      display: inline !important;
       -webkit-box-decoration-break: clone;
       box-decoration-break: clone;
+      transition: background-color 0.08s ease, color 0.08s ease, box-shadow 0.08s ease !important;
     }
     .${WORD_CLASS}.${ACTIVE_CLASS} {
-      background-color: #fff !important;
-      mix-blend-mode: difference !important;
-      opacity: 1 !important;
+      background-color: #FF5C29 !important;
+      color: #FFFFFF !important;
+      border-radius: 4px !important;
+      box-shadow: 0 0 0 2px #FF5C29, 0 2px 8px rgba(255, 92, 41, 0.45) !important;
+      text-shadow: 0 1px 1px rgba(0, 0, 0, 0.3) !important;
+      position: relative !important;
+      z-index: 999999 !important;
     }
     .${WORD_CLASS}::selection,
     .${GAP_CLASS}::selection {
@@ -116,56 +114,39 @@ function ensureStyles(): void {
 }
 
 /**
- * Paints exactly one word. The previous word is tracked by reference rather than
- * by re-scanning the list, so two words can never be highlighted at once.
+ * Paints exactly one active word and un-paints the previous one.
  */
 function paintWord(spans: HTMLElement[], index: number): void {
   if (index < 0 || index >= spans.length) return;
   if (currentIndex >= 0 && currentIndex < spans.length && currentIndex !== index) {
     spans[currentIndex].classList.remove(ACTIVE_CLASS);
   }
-  spans[index].classList.add(ACTIVE_CLASS);
-  currentIndex = index;
+  const el = spans[index];
+  if (el) {
+    el.classList.add(ACTIVE_CLASS);
+    currentIndex = index;
+
+    // Smoothly ensure current word stays visible during long passages
+    try {
+      const rect = el.getBoundingClientRect();
+      const inView =
+        rect.top >= 20 &&
+        rect.bottom <= (window.innerHeight || document.documentElement.clientHeight) - 20;
+      if (!inView) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    } catch {
+      // Ignore scroll errors
+    }
+  }
 }
 
 /**
- * Advances the highlight to `index`.
- *
- * Progress arrives in order, so the common case is simply the next word. Three
- * edge cases are handled explicitly:
- *
- * - A repeat of the current index carries no new information, and an index
- *   *behind* the cursor is stale — a late `WORD_PROGRESS` from a sentence that
- *   finished after the reader had already moved on. Both are dropped rather than
- *   painted, because moving the highlight backwards reads as a glitch.
- * - An index that jumps ahead is walked one word at a time, so the reader still
- *   sees every word pass by and the highlight degrades into a fast catch-up
- *   instead of silently skipping text.
+ * Direct word highlighting on progress.
  */
 function highlightWord(spans: HTMLElement[], index: number): void {
   if (index < 0 || index >= spans.length) return;
-  if (index <= currentIndex) return;
-
-  if (catchUpTimer !== null) {
-    clearTimeout(catchUpTimer);
-    catchUpTimer = null;
-  }
-
-  if (index === currentIndex + 1) {
-    paintWord(spans, index);
-    return;
-  }
-
-  const step = () => {
-    const next = currentIndex + 1;
-    paintWord(spans, next);
-    if (next < index) {
-      catchUpTimer = setTimeout(step, CATCHUP_STEP_MS);
-    } else {
-      catchUpTimer = null;
-    }
-  };
-  step();
+  paintWord(spans, index);
 }
 
 /**
@@ -263,19 +244,21 @@ function wrapTextNode(node: Text, start: number, end: number, spans: HTMLElement
   parent.replaceChild(fragment, node);
 }
 
-/** Wraps every word of the current selection. Returns the word list and every injected span. */
-function wrapSelection(selection: Selection): { words: HTMLElement[]; injected: HTMLElement[] } {
+/** Wraps every word of the range. Returns the word list and every injected span. */
+function wrapRange(range: Range): { words: HTMLElement[]; injected: HTMLElement[] } {
   const spans: HTMLElement[] = [];
   const injected: HTMLElement[] = [];
-  if (selection.rangeCount === 0) return { words: spans, injected };
-
-  const range = selection.getRangeAt(0);
   const nodes = collectTextNodes(range);
+  if (nodes.length === 0) return { words: spans, injected };
+
+  const startContainer = range.startContainer;
+  const startOffset = range.startOffset;
+  const endContainer = range.endContainer;
+  const endOffset = range.endOffset;
 
   nodes.forEach((node) => {
-    // Live ranges re-index as the DOM changes underneath them, so snapshot offsets first.
-    const start = node === range.startContainer ? range.startOffset : 0;
-    const end = node === range.endContainer ? range.endOffset : node.data.length;
+    const start = node === startContainer ? startOffset : 0;
+    const end = node === endContainer ? endOffset : node.data.length;
     if (end > start) {
       wrapTextNode(node, start, end, spans, injected);
     }
@@ -286,11 +269,6 @@ function wrapSelection(selection: Selection): { words: HTMLElement[]; injected: 
 
 /**
  * Undoes the wrapping so the page is left byte-for-byte as it was found.
- *
- * The separators between words are elements in their own right, so the list
- * handed in here covers both the word spans and the gap spans. Each one simply
- * becomes a plain text node again — no separator is synthesised, because
- * inserting one would change the rendered text of the host page.
  */
 function unwrap(spans: HTMLElement[]): void {
   const parents = new Set<Node>();
@@ -308,15 +286,6 @@ function unwrap(spans: HTMLElement[]): void {
 
 /**
  * Scrub native selections that spring back over the injected spans.
- *
- * When the user drags out a fresh selection across previously wrapped text, the
- * browser paints its native selection colour *over* our spans — most visibly
- * across the `larynx-gap` separators, which is the "spaces got selected"
- * artefact. Rather than fight each span's `::selection` (which cannot be
- * unset once the UA restores the range), listen on the capture phase and
- * immediately clear any selection whose range touches an injected span. The
- * listener is deliberately removed again in `cleanup()` so it never outlives
- * the highlight it is protecting.
  */
 function armSelectionGuard(state: ContentState): void {
   if (selectionGuard) return;
@@ -355,15 +324,9 @@ if (!window.__larynx) {
   window.__larynx = state;
 
   state.cleanup = () => {
-    // Drop the selection guard first so no late selectionchange ticks can
-    // re-touch a page that is no longer wrapped.
     if (selectionGuard) {
       selectionGuard();
       selectionGuard = null;
-    }
-    if (catchUpTimer !== null) {
-      clearTimeout(catchUpTimer);
-      catchUpTimer = null;
     }
     currentIndex = -1;
     if (state.injected.length > 0) {
@@ -378,59 +341,41 @@ if (!window.__larynx) {
 
   state.run = () => {
     const selection = window.getSelection();
-    const text = selection && !selection.isCollapsed ? selection.toString().trim() : '';
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) return;
 
-    // Only ever speak what is selected *right now*. Falling back to a remembered
-    // selection means a shortcut press after the highlight has unwrapped
-    // silently re-reads whatever was selected long ago, even when the user has
-    // selected something new — or nothing at all.
+    // Snapshot the range before any DOM mutation or cleanup
+    const range = selection.getRangeAt(0).cloneRange();
+    const text = range.toString().trim();
     if (!text) return;
 
-    // Wrapping replaces the very nodes the range points at, so the on-screen
-    // rectangle has to be read before the DOM is touched.
     let rect: DOMRect | null = null;
-    if (selection && selection.rangeCount > 0) {
-      try {
-        rect = selection.getRangeAt(0).getBoundingClientRect();
-      } catch {
-        rect = null;
-      }
+    try {
+      rect = range.getBoundingClientRect();
+    } catch {
+      rect = null;
     }
 
     state.cleanup();
 
-    // The engine reads the cleaned-up plan; the page keeps showing the original
-    // selection, and `spokenToSource` is the only thing tying the two together.
     const plan = prepareSpeech(text);
     state.spokenToSource = plan.spokenToSource;
 
-    // A selection whose text normalises to nothing (e.g. whitespace or symbols
-    // the engine drops every time) still resulted in a *live* selection, so the
-    // previous highlight must stay gone rather than silently continuing.
     if (!plan.text) {
       state.spokenToSource = [];
       return;
     }
 
     ensureStyles();
-    const wrapped = wrapSelection(selection!);
+    const wrapped = wrapRange(range);
     state.wordSpans = wrapped.words;
     state.injected = wrapped.injected;
 
-    // The page's own selection is pure noise now the words are our elements.
-    // Guard against the browser resurrecting it over the injected spans.
     armSelectionGuard(state);
 
-    // The range has been read and the words are now our own elements, so the
-    // browser's own selection is pure noise: the UA paints it *over* the
-    // highlight, and because it stretches across the whole selection it is
-    // what makes the gaps between words look selected. Dropping it leaves the
-    // custom background as the only thing marking the passage being read.
     try {
-      selection!.removeAllRanges();
+      selection.removeAllRanges();
     } catch {
-      // A selection can be torn down by the page between wrap and clear; the
-      // wrap already succeeded, so there is nothing left to recover.
+      // Ignore removal error
     }
 
     chrome.runtime.sendMessage(
