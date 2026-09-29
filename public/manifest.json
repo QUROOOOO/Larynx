@@ -1,7 +1,7 @@
 {
   "name": "Larynx",
-  "version": "1.0.9",
-  "description": "Select any text on the web, hear it in a natural voice — instantly.",
+  "version": "1.1.0",
+  "description": "Select any text on the web, hear it in a natural voice instantly with negative-contrast word highlighting.",
   "manifest_version": 3,
   "permissions": [
     "activeTab",

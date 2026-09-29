@@ -25,7 +25,7 @@ import { getSettings, setSettings, onSettingsChange, TTSSettings } from '../shar
 import { VoiceInfo, DEFAULT_SETTINGS } from '../shared/types';
 import { splitIntoSentences } from '../shared/text-utils';
 
-const VERSION = '1.0.9';
+const VERSION = '1.1.0';
 const COMMAND_NAME = 'speak-selection';
 const RECORDING_TIMEOUT_MS = 5000;
 const SHORTCUT_UPDATE_TIMEOUT_MS = 2500;
@@ -773,7 +773,7 @@ export const OptionsApp: React.FC = () => {
                   key={i}
                   className={`px-1 rounded transition-all duration-100 ${
                     isActive
-                      ? 'bg-[#FF5C29] text-white shadow-md shadow-[#FF5C29]/40 ring-2 ring-[#FF5C29] font-medium scale-105'
+                      ? 'bg-white text-black shadow-md font-semibold rounded-[2px] scale-105'
                       : 'text-slate-200'
                   }`}
                 >

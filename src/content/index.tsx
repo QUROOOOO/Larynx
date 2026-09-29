@@ -74,6 +74,35 @@ declare global {
  * Host-page resets cannot interfere: the selectors are specific and the
  * declarations that matter carry `!important`.
  */
+let isDarkTheme = false;
+
+function detectTheme(node?: Node | null): boolean {
+  let curr: HTMLElement | null =
+    node instanceof HTMLElement ? node : (node?.parentElement || document.body);
+  while (curr && curr !== document.documentElement) {
+    const bg = window.getComputedStyle(curr).backgroundColor;
+    if (bg && bg !== 'transparent' && bg !== 'rgba(0, 0, 0, 0)') {
+      const match = bg.match(/\d+/g);
+      if (match && match.length >= 3) {
+        const r = parseInt(match[0], 10);
+        const g = parseInt(match[1], 10);
+        const b = parseInt(match[2], 10);
+        return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 < 0.5;
+      }
+    }
+    curr = curr.parentElement;
+  }
+  const bodyBg = window.getComputedStyle(document.body || document.documentElement).backgroundColor;
+  const match = bodyBg.match(/\d+/g);
+  if (match && match.length >= 3) {
+    const r = parseInt(match[0], 10);
+    const g = parseInt(match[1], 10);
+    const b = parseInt(match[2], 10);
+    return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 < 0.5;
+  }
+  return window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)').matches : false;
+}
+
 function ensureStyles(): void {
   if (document.getElementById(STYLE_ID)) return;
   const style = document.createElement('style');
@@ -89,19 +118,15 @@ function ensureStyles(): void {
       text-decoration: none !important;
       padding: 0 1px !important;
       margin: 0 !important;
-      border-radius: 4px !important;
+      border-radius: 2px !important;
       opacity: 1 !important;
       display: inline !important;
       -webkit-box-decoration-break: clone;
       box-decoration-break: clone;
-      transition: background-color 0.08s ease, color 0.08s ease, box-shadow 0.08s ease !important;
+      transition: background-color 0.06s ease, color 0.06s ease !important;
     }
     .${WORD_CLASS}.${ACTIVE_CLASS} {
-      background-color: #FF5C29 !important;
-      color: #FFFFFF !important;
-      border-radius: 4px !important;
-      box-shadow: 0 0 0 2px #FF5C29, 0 2px 8px rgba(255, 92, 41, 0.45) !important;
-      text-shadow: 0 1px 1px rgba(0, 0, 0, 0.3) !important;
+      border-radius: 2px !important;
       position: relative !important;
       z-index: 999999 !important;
     }
@@ -114,16 +139,29 @@ function ensureStyles(): void {
 }
 
 /**
- * Paints exactly one active word and un-paints the previous one.
+ * Paints exactly one active word in the simple negative color of the host page.
  */
 function paintWord(spans: HTMLElement[], index: number): void {
   if (index < 0 || index >= spans.length) return;
   if (currentIndex >= 0 && currentIndex < spans.length && currentIndex !== index) {
-    spans[currentIndex].classList.remove(ACTIVE_CLASS);
+    const prev = spans[currentIndex];
+    prev.classList.remove(ACTIVE_CLASS);
+    prev.style.removeProperty('background-color');
+    prev.style.removeProperty('color');
   }
   const el = spans[index];
   if (el) {
     el.classList.add(ACTIVE_CLASS);
+    // Negative color:
+    // Dark page: Solid White background with Solid Black text
+    // Light page: Solid Black background with Solid White text
+    if (isDarkTheme) {
+      el.style.setProperty('background-color', '#FFFFFF', 'important');
+      el.style.setProperty('color', '#000000', 'important');
+    } else {
+      el.style.setProperty('background-color', '#000000', 'important');
+      el.style.setProperty('color', '#FFFFFF', 'important');
+    }
     currentIndex = index;
 
     // Smoothly ensure current word stays visible during long passages
@@ -328,6 +366,13 @@ if (!window.__larynx) {
       selectionGuard();
       selectionGuard = null;
     }
+    if (currentIndex >= 0 && currentIndex < state.wordSpans.length) {
+      const prev = state.wordSpans[currentIndex];
+      if (prev) {
+        prev.style.removeProperty('background-color');
+        prev.style.removeProperty('color');
+      }
+    }
     currentIndex = -1;
     if (state.injected.length > 0) {
       unwrap(state.injected);
@@ -356,6 +401,9 @@ if (!window.__larynx) {
     }
 
     state.cleanup();
+
+    // Detect page theme for simple negative color inversion
+    isDarkTheme = detectTheme(range.commonAncestorContainer);
 
     const plan = prepareSpeech(text);
     state.spokenToSource = plan.spokenToSource;
