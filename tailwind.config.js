@@ -8,12 +8,12 @@ export default {
   theme: {
     extend: {
       colors: {
-        accent: '#00FF87',
-        accentDim: 'rgba(0, 255, 135, 0.15)',
+        accent: '#2563EB',
+        accentDim: 'rgba(37, 99, 235, 0.15)',
       },
       fontFamily: {
-        mono: ['JetBrains Mono', 'Fira Code', 'monospace'],
-        sans: ['IBM Plex Sans', 'system-ui', 'sans-serif'],
+        mono: ['JetBrains Mono', 'ui-monospace', 'monospace'],
+        sans: ['-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
       },
       animation: {
         'spring-in': 'springIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)',

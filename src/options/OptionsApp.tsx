@@ -182,9 +182,9 @@ const Switch: React.FC<{
     aria-checked={checked}
     aria-label={label}
     onClick={() => onChange(!checked)}
-    className={`relative shrink-0 h-6 w-11 rounded-full border transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#FF5C29]/60 ${
+    className={`relative shrink-0 h-6 w-11 rounded-full border transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60 ${
       checked
-        ? 'border-[#FF5C29] bg-[#FF5C29]'
+        ? 'border-blue-600 bg-blue-600'
         : 'border-white/10 bg-white/5 hover:border-white/20'
     }`}
   >
@@ -236,7 +236,7 @@ const Dropdown: React.FC<{
         aria-expanded={open}
         aria-label={label}
         onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center justify-between gap-2.5 px-3.5 h-10 rounded-xl bg-[#141824] border border-white/10 text-white hover:border-white/25 focus:outline-none focus:ring-2 focus:ring-[#FF5C29]/40 transition-all text-sm font-medium"
+        className="w-full flex items-center justify-between gap-2.5 px-3.5 h-10 rounded-xl bg-[#161822] border border-white/10 text-white hover:border-white/25 focus:outline-none focus:ring-2 focus:ring-blue-500/40 transition-all text-sm font-medium"
       >
         <span className="truncate">{selected?.label ?? label}</span>
         <ChevronDown
@@ -252,7 +252,7 @@ const Dropdown: React.FC<{
           ref={listRef}
           role="listbox"
           aria-label={label}
-          className="absolute z-50 mt-1.5 w-full max-h-64 overflow-y-auto rounded-xl border border-white/10 bg-[#121622] p-1.5 shadow-2xl backdrop-blur-xl animate-in fade-in zoom-in-95 duration-150"
+          className="absolute z-50 mt-1.5 w-full max-h-64 overflow-y-auto rounded-xl border border-white/10 bg-[#13151D] p-1.5 shadow-2xl backdrop-blur-xl animate-in fade-in zoom-in-95 duration-150"
         >
           {options.map((option) => {
             const isSelected = option.value === value;
@@ -268,7 +268,7 @@ const Dropdown: React.FC<{
                 }}
                 className={`w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-left text-sm transition-colors ${
                   isSelected
-                    ? 'text-white bg-[#FF5C29] font-medium'
+                    ? 'text-white bg-blue-600 font-medium'
                     : 'text-slate-300 hover:bg-white/5 hover:text-white'
                 }`}
               >
@@ -307,55 +307,6 @@ export const OptionsApp: React.FC = () => {
   const [playgroundPlaying, setPlaygroundPlaying] = useState(false);
   const [playgroundActiveWordIndex, setPlaygroundActiveWordIndex] = useState<number | null>(null);
   const playgroundTokens = useMemo(() => playgroundText.match(/\S+/g) ?? [], [playgroundText]);
-
-  // Test Bench sliding highlight pill
-  const benchWordRefs = useRef<Array<HTMLSpanElement | null>>([]);
-  const benchContainerRef = useRef<HTMLDivElement>(null);
-  const [pillStyle, setPillStyle] = useState<{
-    transform: string;
-    width: string;
-    height: string;
-    opacity: number;
-    isLineBreak: boolean;
-  }>({
-    transform: 'translate3d(0, 0, 0)',
-    width: '0px',
-    height: '0px',
-    opacity: 0,
-    isLineBreak: false,
-  });
-
-  useEffect(() => {
-    if (playgroundActiveWordIndex === null || playgroundActiveWordIndex < 0 || playgroundActiveWordIndex >= playgroundTokens.length) {
-      setPillStyle((prev) => ({ ...prev, opacity: 0 }));
-      return;
-    }
-    const el = benchWordRefs.current[playgroundActiveWordIndex];
-    const container = benchContainerRef.current;
-    if (!el || !container) return;
-
-    const cRect = container.getBoundingClientRect();
-    const wRect = el.getBoundingClientRect();
-
-    const targetX = Math.round(wRect.left - cRect.left - 2);
-    const targetY = Math.round(wRect.top - cRect.top - 1);
-    const targetW = Math.max(8, Math.round(wRect.width + 4));
-    const targetH = Math.max(14, Math.round(wRect.height + 2));
-
-    setPillStyle((prev) => {
-      const match = prev.transform.match(/translate3d\(([^,]+)px,\s*([^,]+)px/);
-      const prevY = match ? parseFloat(match[2]) : targetY;
-      const isLineBreak = prev.opacity > 0 && Math.abs(targetY - prevY) > 8;
-
-      return {
-        transform: `translate3d(${targetX}px, ${targetY}px, 0)`,
-        width: `${targetW}px`,
-        height: `${targetH}px`,
-        opacity: 1,
-        isLineBreak,
-      };
-    });
-  }, [playgroundActiveWordIndex, playgroundTokens.length]);
 
   // Shortcut recorder state
   const [shortcut, setShortcut] = useState('');
@@ -559,7 +510,7 @@ export const OptionsApp: React.FC = () => {
       let timer: ReturnType<typeof setInterval> | null = null;
       let localIndex = -1;
 
-      const baseMs = 360 / settings.rate;
+      const baseMs = 230 / Math.max(0.2, settings.rate);
       let nextWordAt = Date.now();
 
       const stepPump = () => {
@@ -571,7 +522,13 @@ export const OptionsApp: React.FC = () => {
           localIndex++;
           setPlaygroundActiveWordIndex(currentOffset + localIndex);
           const w = sentenceWords[localIndex] || '';
-          const factor = Math.max(0.65, Math.min(1.75, (w.length + 1) / 5));
+          const len = w.replace(/[^\p{L}\p{N}]/gu, '').length;
+          let factor = 1.0;
+          if (len <= 2) factor = 0.55;
+          else if (len <= 4) factor = 0.80;
+          else if (len <= 7) factor = 1.05;
+          else if (len <= 10) factor = 1.30;
+          else factor = 1.55;
           nextWordAt = Date.now() + Math.round(baseMs * factor);
         }
       };
@@ -592,11 +549,19 @@ export const OptionsApp: React.FC = () => {
             if (offsets[i] <= charIdx) found = i;
             else break;
           }
-          localIndex = found;
-          setPlaygroundActiveWordIndex(currentOffset + localIndex);
-          const w = sentenceWords[localIndex] || '';
-          const factor = Math.max(0.65, Math.min(1.75, (w.length + 1) / 5));
-          nextWordAt = Date.now() + Math.round(baseMs * factor);
+          if (found > localIndex) {
+            localIndex = found;
+            setPlaygroundActiveWordIndex(currentOffset + localIndex);
+            const w = sentenceWords[localIndex] || '';
+            const len = w.replace(/[^\p{L}\p{N}]/gu, '').length;
+            let factor = 1.0;
+            if (len <= 2) factor = 0.55;
+            else if (len <= 4) factor = 0.80;
+            else if (len <= 7) factor = 1.05;
+            else if (len <= 10) factor = 1.30;
+            else factor = 1.55;
+            nextWordAt = Date.now() + Math.round(baseMs * factor);
+          }
         }
       };
 
@@ -755,12 +720,12 @@ export const OptionsApp: React.FC = () => {
   const estimatedWpm = Math.round(BASE_WPM * settings.rate);
 
   return (
-    <div className="min-h-screen bg-[#0A0B0E] text-neutral-100 font-sans selection:bg-[#FF5222]/30 selection:text-white">
+    <div className="min-h-screen bg-[#0D0E12] text-neutral-100 font-sans selection:bg-blue-600/30 selection:text-white">
       <div className="relative z-10 mx-auto w-full max-w-4xl px-5 sm:px-8 py-10 sm:py-14 space-y-8">
         {/* Header Bar */}
         <header className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-5 pb-6 border-b border-white/[0.08]">
           <div className="flex items-center gap-4">
-            <div className="w-11 h-11 rounded-xl bg-[#141720] border border-white/10 flex items-center justify-center text-[#FF5222] shadow-sm shrink-0">
+            <div className="w-11 h-11 rounded-xl bg-[#15171E] border border-white/10 flex items-center justify-center text-blue-400 shadow-sm shrink-0">
               <Volume2 size={22} strokeWidth={2.2} />
             </div>
             <div>
@@ -781,13 +746,13 @@ export const OptionsApp: React.FC = () => {
           </div>
 
           {/* Quick status bar */}
-          <div className="flex items-center gap-2 bg-[#12141B] border border-white/[0.08] px-3.5 py-1.5 rounded-xl text-xs text-neutral-300 shadow-sm self-start sm:self-auto font-mono">
+          <div className="flex items-center gap-2 bg-[#15171E] border border-white/[0.08] px-3.5 py-1.5 rounded-xl text-xs text-neutral-300 shadow-sm self-start sm:self-auto font-mono">
             <span className="flex items-center gap-1.5 text-neutral-400 font-sans">
-              <Headphones size={13} className="text-[#FF5222]" />
+              <Headphones size={13} className="text-blue-400" />
               <span className="truncate max-w-[140px]">{selectedVoice ? selectedVoice.name.split('-')[0].trim() : 'System Voice'}</span>
             </span>
             <span className="text-white/20">|</span>
-            <span className="text-[#FF5222] font-semibold">{settings.rate.toFixed(2)}×</span>
+            <span className="text-blue-400 font-semibold">{settings.rate.toFixed(2)}×</span>
             <span className="text-white/20">|</span>
             <span className="text-neutral-300 font-medium">{shortcut || 'Ctrl+Shift+S'}</span>
           </div>
@@ -796,10 +761,10 @@ export const OptionsApp: React.FC = () => {
         {/* ---------------------------------------------------------------- */}
         {/* INTERACTIVE PLAYGROUND (Test Bench)                             */}
         {/* ---------------------------------------------------------------- */}
-        <section className="rounded-2xl bg-[#111319] border border-white/[0.08] p-6 shadow-lg space-y-4">
+        <section className="rounded-2xl bg-[#15171E] border border-white/[0.08] p-6 shadow-lg space-y-4">
           <div className="flex items-center justify-between gap-4">
             <div className="flex items-center gap-2">
-              <Sliders size={15} className="text-[#FF5222]" />
+              <Sliders size={15} className="text-blue-400" />
               <h2 className="text-xs font-semibold uppercase tracking-wider text-neutral-300">
                 Acoustic & Highlight Monitor
               </h2>
@@ -809,35 +774,19 @@ export const OptionsApp: React.FC = () => {
             </span>
           </div>
 
-          {/* Interactive highlighted text frame with sliding pill */}
+          {/* Interactive highlighted text frame with direct negative-contrast badge */}
           <div
-            ref={benchContainerRef}
-            className="relative min-h-[84px] p-5 rounded-xl bg-[#090A0E] border border-white/[0.06] flex flex-wrap gap-x-1.5 gap-y-2 items-center leading-relaxed text-base overflow-hidden"
+            className="relative min-h-[84px] p-5 rounded-xl bg-[#0D0E12] border border-white/[0.06] flex flex-wrap gap-x-1.5 gap-y-2 items-center leading-relaxed text-base overflow-hidden"
           >
-            {/* Real sliding highlight pill with spring jiggle */}
-            <div
-              className={`absolute pointer-events-none rounded-[3px] bg-white z-0 ${
-                pillStyle.isLineBreak ? '' : 'larynx-bench-pill'
-              }`}
-              style={{
-                transform: pillStyle.transform,
-                width: pillStyle.width,
-                height: pillStyle.height,
-                opacity: pillStyle.opacity,
-                boxShadow: '0 2px 10px rgba(255, 255, 255, 0.25)',
-              }}
-            />
-
             {playgroundTokens.map((token, i) => {
               const isActive = playgroundActiveWordIndex === i;
               return (
                 <span
                   key={i}
-                  ref={(el) => {
-                    benchWordRefs.current[i] = el;
-                  }}
-                  className={`relative z-10 px-1 font-medium transition-colors duration-100 ${
-                    isActive ? 'text-black font-semibold' : 'text-neutral-300'
+                  className={`inline-block rounded px-1.5 py-0.5 font-medium transition-all duration-100 ${
+                    isActive
+                      ? 'bg-white text-black font-semibold shadow-md shadow-white/20 scale-[1.04]'
+                      : 'text-neutral-300'
                   }`}
                 >
                   {token}
@@ -852,7 +801,7 @@ export const OptionsApp: React.FC = () => {
               value={playgroundText}
               onChange={(e) => setPlaygroundText(e.target.value)}
               placeholder="Type any test passage to audition..."
-              className="flex-1 bg-[#151821] border border-white/10 rounded-xl px-3.5 py-2 text-xs text-neutral-200 placeholder:text-neutral-500 focus:outline-none focus:border-[#FF5222]/60 transition-colors font-sans"
+              className="flex-1 bg-[#1C1F28] border border-white/10 rounded-xl px-3.5 py-2 text-xs text-neutral-200 placeholder:text-neutral-500 focus:outline-none focus:border-blue-500/60 transition-colors font-sans"
             />
             <button
               type="button"
@@ -860,7 +809,7 @@ export const OptionsApp: React.FC = () => {
               className={`flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold shadow-sm transition-all shrink-0 ${
                 playgroundPlaying
                   ? 'bg-rose-600 hover:bg-rose-500 text-white'
-                  : 'bg-[#FF5222] hover:bg-[#FF6638] text-white hover:brightness-105 active:scale-[0.98]'
+                  : 'bg-blue-600 hover:bg-blue-500 text-white hover:brightness-105 active:scale-[0.98]'
               }`}
             >
               {playgroundPlaying ? (
@@ -879,11 +828,11 @@ export const OptionsApp: React.FC = () => {
         {/* ---------------------------------------------------------------- */}
         {/* SECTION 1: VOICE ROSTER                                         */}
         {/* ---------------------------------------------------------------- */}
-        <section className="rounded-2xl bg-[#11141E] border border-white/[0.08] p-6 shadow-xl space-y-5">
+        <section className="rounded-2xl bg-[#15171E] border border-white/[0.08] p-6 shadow-xl space-y-5">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-white/[0.06]">
             <div>
               <h2 className="text-base font-semibold text-white flex items-center gap-2">
-                <Mic size={18} className="text-[#FF5C29]" />
+                <Mic size={18} className="text-blue-400" />
                 Voice & Pronunciation
               </h2>
               <p className="text-xs text-slate-400 mt-0.5">
@@ -907,7 +856,7 @@ export const OptionsApp: React.FC = () => {
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Search voices by name or language..."
-                className="w-full pl-10 pr-4 h-10 rounded-xl bg-[#141824] border border-white/10 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-[#FF5C29]/60 transition-colors"
+                className="w-full pl-10 pr-4 h-10 rounded-xl bg-[#1C1F28] border border-white/10 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-blue-500/60 transition-colors"
               />
             </div>
 
@@ -924,8 +873,8 @@ export const OptionsApp: React.FC = () => {
               onClick={() => setOnlyNatural((v) => !v)}
               className={`h-10 px-4 rounded-xl text-xs font-semibold border transition-all shrink-0 flex items-center gap-1.5 ${
                 onlyNatural
-                  ? 'border-[#FF5C29] bg-[#FF5C29]/15 text-[#FF5C29]'
-                  : 'border-white/10 bg-[#141824] text-slate-300 hover:text-white hover:border-white/20'
+                  ? 'border-blue-500 bg-blue-500/15 text-blue-400'
+                  : 'border-white/10 bg-[#1C1F28] text-slate-300 hover:text-white hover:border-white/20'
               }`}
             >
               <Filter size={13} />
@@ -936,7 +885,7 @@ export const OptionsApp: React.FC = () => {
           {/* Voice Cards List */}
           {loadingVoices ? (
             <div className="py-12 flex flex-col items-center justify-center gap-2 text-slate-400">
-              <div className="w-6 h-6 border-2 border-[#FF5C29] border-t-transparent rounded-full animate-spin" />
+              <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
               <span className="text-xs">Loading available system voices…</span>
             </div>
           ) : filtered.length === 0 ? (
@@ -957,8 +906,8 @@ export const OptionsApp: React.FC = () => {
                     key={voice.voiceURI}
                     className={`group flex items-center justify-between gap-3 px-4 py-3 rounded-xl border transition-all ${
                       isSelected
-                        ? 'border-[#FF5C29]/60 bg-[#FF5C29]/10 shadow-sm shadow-[#FF5C29]/10 ring-1 ring-[#FF5C29]/30'
-                        : 'border-white/[0.05] bg-[#141824]/60 hover:bg-[#141824] hover:border-white/10'
+                        ? 'border-blue-500/60 bg-blue-500/10 shadow-sm shadow-blue-500/10 ring-1 ring-blue-500/30'
+                        : 'border-white/[0.05] bg-[#1C1F28]/60 hover:bg-[#1C1F28] hover:border-white/10'
                     }`}
                   >
                     <button
@@ -969,7 +918,7 @@ export const OptionsApp: React.FC = () => {
                       <div
                         className={`w-5 h-5 rounded-full border flex items-center justify-center shrink-0 transition-colors ${
                           isSelected
-                            ? 'border-[#FF5C29] bg-[#FF5C29] text-white'
+                            ? 'border-blue-600 bg-blue-600 text-white'
                             : 'border-white/20 group-hover:border-white/40'
                         }`}
                       >
@@ -986,7 +935,7 @@ export const OptionsApp: React.FC = () => {
                             {voice.name}
                           </p>
                           {voice.isNatural && (
-                            <span className="font-semibold text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full bg-gradient-to-r from-amber-500/20 to-orange-500/20 text-amber-400 border border-amber-500/30">
+                            <span className="font-semibold text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full bg-sky-500/15 text-sky-400 border border-sky-500/30">
                               Natural
                             </span>
                           )}
@@ -1009,7 +958,7 @@ export const OptionsApp: React.FC = () => {
                       title={isPlaying ? 'Stop Preview' : 'Listen to Sample'}
                       className={`h-8 px-3 rounded-lg flex items-center gap-1.5 text-xs font-semibold border transition-all shrink-0 ${
                         isPlaying
-                          ? 'border-[#FF5C29] bg-[#FF5C29] text-white shadow-md shadow-[#FF5C29]/30'
+                          ? 'border-blue-600 bg-blue-600 text-white shadow-md shadow-blue-600/30'
                           : 'border-white/10 bg-white/5 text-slate-300 hover:text-white hover:bg-white/10'
                       }`}
                     >
@@ -1033,11 +982,11 @@ export const OptionsApp: React.FC = () => {
         {/* ---------------------------------------------------------------- */}
         {/* SECTION 2: SPEECH PACE & SPEED (ACCURATELY CALIBRATED!)          */}
         {/* ---------------------------------------------------------------- */}
-        <section className="rounded-2xl bg-[#111319] border border-white/[0.08] p-6 shadow-lg space-y-6">
+        <section className="rounded-2xl bg-[#15171E] border border-white/[0.08] p-6 shadow-lg space-y-6">
           <div className="flex items-center justify-between gap-4 pb-3 border-b border-white/[0.06]">
             <div>
               <h2 className="text-sm font-semibold uppercase tracking-wider text-neutral-200 flex items-center gap-2">
-                <Sliders size={16} className="text-[#FF5222]" />
+                <Sliders size={16} className="text-blue-400" />
                 Speech Tempo & Pace
               </h2>
               <p className="text-xs text-neutral-400 mt-0.5">
@@ -1051,12 +1000,12 @@ export const OptionsApp: React.FC = () => {
                 onClick={() => handleRateChange(Math.max(0.5, Math.round((settings.rate - 0.1) * 20) / 20))}
                 title="Decrease speed by 0.1x"
                 aria-label="Decrease rate by 0.1x"
-                className="w-8 h-8 rounded-lg border border-white/10 bg-[#161822] text-neutral-300 hover:text-white hover:border-white/25 flex items-center justify-center transition-colors"
+                className="w-8 h-8 rounded-lg border border-white/10 bg-[#1C1F28] text-neutral-300 hover:text-white hover:border-white/25 flex items-center justify-center transition-colors"
               >
                 <Minus size={13} />
               </button>
-              <div className="px-3 py-1 rounded-lg bg-[#161922] border border-white/10 text-right min-w-[88px]">
-                <span className="text-sm font-bold text-[#FF5222] font-mono tabular-nums">
+              <div className="px-3 py-1 rounded-lg bg-[#1C1F28] border border-white/10 text-right min-w-[88px]">
+                <span className="text-sm font-bold text-blue-400 font-mono tabular-nums">
                   {settings.rate.toFixed(2)}×
                 </span>
                 <span className="block text-[10px] text-neutral-400 font-mono">
@@ -1068,7 +1017,7 @@ export const OptionsApp: React.FC = () => {
                 onClick={() => handleRateChange(Math.min(2.0, Math.round((settings.rate + 0.1) * 20) / 20))}
                 title="Increase speed by 0.1x"
                 aria-label="Increase rate by 0.1x"
-                className="w-8 h-8 rounded-lg border border-white/10 bg-[#161822] text-neutral-300 hover:text-white hover:border-white/25 flex items-center justify-center transition-colors"
+                className="w-8 h-8 rounded-lg border border-white/10 bg-[#1C1F28] text-neutral-300 hover:text-white hover:border-white/25 flex items-center justify-center transition-colors"
               >
                 <Plus size={13} />
               </button>
@@ -1079,10 +1028,10 @@ export const OptionsApp: React.FC = () => {
           <div className="space-y-4 pt-1">
             <div className="relative flex items-center h-8">
               {/* Slider Track Background */}
-              <div className="absolute left-0 right-0 h-2 rounded-full bg-[#181D2B] border border-white/5 overflow-hidden">
+              <div className="absolute left-0 right-0 h-2 rounded-full bg-[#1C1F28] border border-white/5 overflow-hidden">
                 {/* Active Fill Gradient */}
                 <div
-                  className="h-full bg-gradient-to-r from-[#FF5C29] to-[#FF854D] rounded-full transition-all duration-75"
+                  className="h-full bg-blue-600 rounded-full transition-all duration-75"
                   style={{ width: `${pacePercentage}%` }}
                 />
               </div>
@@ -1101,13 +1050,12 @@ export const OptionsApp: React.FC = () => {
 
               {/* Custom Thumb positioned at exact percentage */}
               <div
-                className="absolute w-5 h-5 rounded-full bg-white shadow-md shadow-black/50 border-2 border-[#FF5C29] pointer-events-none -translate-x-1/2 z-10 transition-all duration-75"
+                className="absolute w-5 h-5 rounded-full bg-white shadow-md shadow-black/50 border-2 border-blue-600 pointer-events-none -translate-x-1/2 z-10 transition-all duration-75"
                 style={{ left: `${pacePercentage}%` }}
               />
             </div>
 
             {/* Mathematically Accurate Markers matching the 0.5 - 2.0 scale: */}
-            {/* (0.5 = 0%, 0.75 = 16.7%, 1.0 = 33.3%, 1.25 = 50%, 1.5 = 66.7%, 2.0 = 100%) */}
             <div className="relative text-[11px] font-mono text-slate-400 h-6">
               <span className="absolute left-0 -translate-x-0">0.50× (Slow)</span>
               <button
@@ -1115,8 +1063,8 @@ export const OptionsApp: React.FC = () => {
                 onClick={() => handleRateChange(1.0)}
                 className="absolute left-[33.33%] -translate-x-1/2 flex flex-col items-center group cursor-pointer focus:outline-none"
               >
-                <span className="w-1 h-1.5 rounded-full bg-[#FF5C29] mb-0.5 group-hover:scale-150 transition-transform" />
-                <span className="font-bold text-[#FF5C29] group-hover:underline">1.00× (Normal)</span>
+                <span className="w-1 h-1.5 rounded-full bg-blue-500 mb-0.5 group-hover:scale-150 transition-transform" />
+                <span className="font-bold text-blue-400 group-hover:underline">1.00× (Normal)</span>
               </button>
               <span className="absolute left-[66.67%] -translate-x-1/2 hidden sm:inline">1.50×</span>
               <span className="absolute right-0 translate-x-0">2.00× (Fast)</span>
@@ -1140,8 +1088,8 @@ export const OptionsApp: React.FC = () => {
                     onClick={() => handleRateChange(p.val)}
                     className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
                       isSelected
-                        ? 'border-[#FF5C29] bg-[#FF5C29] text-white shadow-sm shadow-[#FF5C29]/30'
-                        : 'border-white/10 bg-[#141824] text-slate-300 hover:text-white hover:border-white/20'
+                        ? 'border-blue-600 bg-blue-600 text-white shadow-sm shadow-blue-600/30'
+                        : 'border-white/10 bg-[#1C1F28] text-slate-300 hover:text-white hover:border-white/20'
                     }`}
                   >
                     {p.label}
@@ -1153,12 +1101,12 @@ export const OptionsApp: React.FC = () => {
         </section>
 
         {/* ---------------------------------------------------------------- */}
-        {/* SECTION 3: DELIVERY & PAUSES (NO CONFUSING DOUBLE LINES!)        */}
+        {/* SECTION 3: DELIVERY & PAUSES                                    */}
         {/* ---------------------------------------------------------------- */}
-        <section className="rounded-2xl bg-[#111319] border border-white/[0.08] p-6 shadow-lg space-y-6">
+        <section className="rounded-2xl bg-[#15171E] border border-white/[0.08] p-6 shadow-lg space-y-6">
           <div className="pb-3 border-b border-white/[0.06]">
             <h2 className="text-sm font-semibold uppercase tracking-wider text-neutral-200 flex items-center gap-2">
-              <Headphones size={16} className="text-[#FF5222]" />
+              <Headphones size={16} className="text-blue-400" />
               Natural Dictation & Breathing
             </h2>
             <p className="text-xs text-neutral-400 mt-0.5">
@@ -1168,13 +1116,13 @@ export const OptionsApp: React.FC = () => {
 
           <div className="grid sm:grid-cols-2 gap-4">
             {/* Card A: Sentence Pause Gap */}
-            <div className="p-4 rounded-xl bg-[#151821] border border-white/[0.06] space-y-3">
+            <div className="p-4 rounded-xl bg-[#1C1F28] border border-white/[0.06] space-y-3">
               <div className="flex items-center justify-between">
                 <div>
                   <h3 className="text-xs font-semibold uppercase tracking-wider text-white">Sentence Rest</h3>
                   <p className="text-xs text-neutral-400 mt-0.5">Breath gap between sentences</p>
                 </div>
-                <span className="font-mono text-xs font-bold px-2 py-0.5 rounded-md bg-[#FF5222]/15 text-[#FF5222] border border-[#FF5222]/20">
+                <span className="font-mono text-xs font-bold px-2 py-0.5 rounded-md bg-blue-500/15 text-blue-400 border border-blue-500/20">
                   {settings.sentenceGap} ms
                 </span>
               </div>
@@ -1182,7 +1130,7 @@ export const OptionsApp: React.FC = () => {
               <div className="relative flex items-center h-6">
                 <div className="absolute left-0 right-0 h-1.5 rounded-full bg-white/10 overflow-hidden">
                   <div
-                    className="h-full bg-[#FF5222] rounded-full"
+                    className="h-full bg-blue-600 rounded-full"
                     style={{ width: `${(settings.sentenceGap / 600) * 100}%` }}
                   />
                 </div>
@@ -1206,7 +1154,7 @@ export const OptionsApp: React.FC = () => {
             </div>
 
             {/* Card B: Pause on Punctuation */}
-            <div className="p-4 rounded-xl bg-[#151821] border border-white/[0.06] flex items-center justify-between gap-4">
+            <div className="p-4 rounded-xl bg-[#1C1F28] border border-white/[0.06] flex items-center justify-between gap-4">
               <div>
                 <h3 className="text-xs font-semibold uppercase tracking-wider text-white">Punctuation Cadence</h3>
                 <p className="text-xs text-neutral-400 mt-1 leading-relaxed">
@@ -1225,11 +1173,11 @@ export const OptionsApp: React.FC = () => {
         {/* ---------------------------------------------------------------- */}
         {/* SECTION 4: KEYBOARD SHORTCUT RECORDER                           */}
         {/* ---------------------------------------------------------------- */}
-        <section className="rounded-2xl bg-[#111319] border border-white/[0.08] p-6 shadow-lg space-y-5">
+        <section className="rounded-2xl bg-[#15171E] border border-white/[0.08] p-6 shadow-lg space-y-5">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-white/[0.06]">
             <div>
               <h2 className="text-sm font-semibold uppercase tracking-wider text-neutral-200 flex items-center gap-2">
-                <Keyboard size={16} className="text-[#FF5222]" />
+                <Keyboard size={16} className="text-blue-400" />
                 Trigger Key Chord
               </h2>
               <p className="text-xs text-neutral-400 mt-0.5">
@@ -1240,13 +1188,13 @@ export const OptionsApp: React.FC = () => {
               href="chrome://extensions/shortcuts"
               target="_blank"
               rel="noopener noreferrer"
-              className="text-xs text-[#FF5222] hover:underline flex items-center gap-1 self-start sm:self-auto font-medium"
+              className="text-xs text-blue-400 hover:underline flex items-center gap-1 self-start sm:self-auto font-medium"
             >
               <Command size={12} /> Chrome System Shortcuts
             </a>
           </div>
 
-          <div className="p-5 rounded-xl bg-[#151821] border border-white/[0.06] flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="p-5 rounded-xl bg-[#1C1F28] border border-white/[0.06] flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
               <div className="flex items-center gap-2 flex-wrap">
                 {parseShortcutKeys(shortcut).map((key, i) => (
@@ -1273,7 +1221,7 @@ export const OptionsApp: React.FC = () => {
                 }
                 className={`px-4 py-2 rounded-xl text-xs font-semibold border transition-all ${
                   recording
-                    ? 'border-[#FF5222] bg-[#FF5222]/20 text-[#FF5222] animate-pulse ring-2 ring-[#FF5222]/40'
+                    ? 'border-blue-500 bg-blue-500/20 text-blue-400 animate-pulse ring-2 ring-blue-500/40'
                     : 'border-white/10 bg-white/5 text-white hover:bg-white/10 hover:border-white/20'
                 }`}
               >

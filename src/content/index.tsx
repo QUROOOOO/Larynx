@@ -77,8 +77,26 @@ declare global {
 let isDarkTheme = false;
 
 function detectTheme(node?: Node | null): boolean {
-  let curr: HTMLElement | null =
+  // 1. Direct Text Color Luminance: The most reliable signal on the web.
+  // Dark text (<0.45 lum) means the text is displayed over a light background.
+  // Light text (>0.55 lum) means the text is displayed over a dark background.
+  const el: HTMLElement | null =
     node instanceof HTMLElement ? node : (node?.parentElement || document.body);
+  if (el) {
+    const textColor = window.getComputedStyle(el).color;
+    const match = textColor.match(/\d+/g);
+    if (match && match.length >= 3) {
+      const r = parseInt(match[0], 10);
+      const g = parseInt(match[1], 10);
+      const b = parseInt(match[2], 10);
+      const lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+      if (lum < 0.45) return false; // Light page
+      if (lum > 0.55) return true;  // Dark page
+    }
+  }
+
+  // 2. Traverse ancestor background colors
+  let curr: HTMLElement | null = el;
   while (curr && curr !== document.documentElement) {
     const bg = window.getComputedStyle(curr).backgroundColor;
     if (bg && bg !== 'transparent' && bg !== 'rgba(0, 0, 0, 0)') {
@@ -92,6 +110,7 @@ function detectTheme(node?: Node | null): boolean {
     }
     curr = curr.parentElement;
   }
+
   const bodyBg = window.getComputedStyle(document.body || document.documentElement).backgroundColor;
   const match = bodyBg.match(/\d+/g);
   if (match && match.length >= 3) {
@@ -100,11 +119,9 @@ function detectTheme(node?: Node | null): boolean {
     const b = parseInt(match[2], 10);
     return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 < 0.5;
   }
-  return window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)').matches : false;
-}
 
-const PILL_ID = 'larynx-slider-pill';
-let lastTop: number | null = null;
+  return false;
+}
 
 function ensureStyles(): void {
   if (document.getElementById(STYLE_ID)) return;
@@ -121,63 +138,54 @@ function ensureStyles(): void {
       text-decoration: none !important;
       padding: 0 1px !important;
       margin: 0 !important;
-      border-radius: 3px !important;
+      border-radius: 4px !important;
       opacity: 1 !important;
       display: inline !important;
       -webkit-box-decoration-break: clone;
       box-decoration-break: clone;
-      transition: color 0.08s ease !important;
+      transition: background-color 0.10s ease, color 0.10s ease, transform 0.12s cubic-bezier(0.2, 1.25, 0.4, 1) !important;
     }
     .${WORD_CLASS}.${ACTIVE_CLASS} {
       position: relative !important;
       z-index: 999995 !important;
+      display: inline-block !important;
+      animation: larynx-spring-pop 0.14s cubic-bezier(0.18, 1.25, 0.35, 1) both !important;
+      will-change: transform !important;
+    }
+    @keyframes larynx-spring-pop {
+      0% {
+        transform: scale(0.94) translateY(1px);
+      }
+      60% {
+        transform: scale(1.08) translateY(-0.5px);
+      }
+      100% {
+        transform: scale(1.03) translateY(0);
+      }
     }
     .${WORD_CLASS}::selection,
     .${GAP_CLASS}::selection {
       background-color: transparent !important;
       color: inherit !important;
-    }
-    #${PILL_ID} {
-      position: absolute !important;
-      pointer-events: none !important;
-      z-index: 999990 !important;
-      border-radius: 4px !important;
-      box-sizing: border-box !important;
-      will-change: transform, width, height, opacity !important;
-      transition: transform 0.13s cubic-bezier(0.2, 1.28, 0.4, 1),
-                  width 0.13s cubic-bezier(0.2, 1.28, 0.4, 1),
-                  height 0.10s ease,
-                  opacity 0.08s ease !important;
     }`;
   (document.head || document.documentElement).appendChild(style);
 }
 
-function getOrCreateSliderPill(): HTMLElement {
-  let pill = document.getElementById(PILL_ID);
-  if (!pill) {
-    pill = document.createElement('div');
-    pill.id = PILL_ID;
-    if (isDarkTheme) {
-      pill.style.setProperty('background-color', '#FFFFFF', 'important');
-      pill.style.setProperty('box-shadow', '0 2px 10px rgba(255, 255, 255, 0.25)', 'important');
-    } else {
-      pill.style.setProperty('background-color', '#000000', 'important');
-      pill.style.setProperty('box-shadow', '0 2px 10px rgba(0, 0, 0, 0.22)', 'important');
-    }
-    (document.body || document.documentElement).appendChild(pill);
-  }
-  return pill;
-}
-
 /**
- * Paints active word with sliding negative-color pill and fast smooth spring jiggle.
+ * Paints active word with self-contained negative-color styling and smooth spring jiggle.
+ * Guarantees text is NEVER white-on-white or black-on-black.
  */
 function paintWord(spans: HTMLElement[], index: number): void {
   if (index < 0 || index >= spans.length) return;
   if (currentIndex >= 0 && currentIndex < spans.length && currentIndex !== index) {
     const prev = spans[currentIndex];
     prev.classList.remove(ACTIVE_CLASS);
+    prev.style.removeProperty('background-color');
     prev.style.removeProperty('color');
+    prev.style.removeProperty('padding');
+    prev.style.removeProperty('margin');
+    prev.style.removeProperty('border-radius');
+    prev.style.removeProperty('box-shadow');
     prev.style.removeProperty('position');
     prev.style.removeProperty('z-index');
   }
@@ -186,49 +194,29 @@ function paintWord(spans: HTMLElement[], index: number): void {
   if (!el) return;
 
   el.classList.add(ACTIVE_CLASS);
-  // Negative color:
-  // Dark page: Solid White background with Solid Black text
-  // Light page: Solid Black background with Solid White text
+
+  // Exact negative color applied directly to el:
+  // Light page (dark text): Solid Black badge with Solid White text
+  // Dark page (light text): Solid White badge with Solid Black text
   if (isDarkTheme) {
+    el.style.setProperty('background-color', '#FFFFFF', 'important');
     el.style.setProperty('color', '#000000', 'important');
+    el.style.setProperty('box-shadow', '0 2px 8px rgba(255, 255, 255, 0.3)', 'important');
   } else {
+    el.style.setProperty('background-color', '#000000', 'important');
     el.style.setProperty('color', '#FFFFFF', 'important');
+    el.style.setProperty('box-shadow', '0 2px 8px rgba(0, 0, 0, 0.25)', 'important');
   }
+
+  el.style.setProperty('padding', '2px 4px', 'important');
+  el.style.setProperty('margin', '0 -1px', 'important');
+  el.style.setProperty('border-radius', '4px', 'important');
   el.style.setProperty('position', 'relative', 'important');
   el.style.setProperty('z-index', '999995', 'important');
   currentIndex = index;
 
-  // Move the sliding highlight pill with fast spring jiggle animation
   try {
-    const pill = getOrCreateSliderPill();
     const rect = el.getBoundingClientRect();
-    const scrollX = window.scrollX || window.pageXOffset || 0;
-    const scrollY = window.scrollY || window.pageYOffset || 0;
-
-    const targetX = rect.left + scrollX - 2;
-    const targetY = rect.top + scrollY - 1;
-    const targetW = Math.max(8, rect.width + 4);
-    const targetH = Math.max(12, rect.height + 2);
-
-    // If changing lines, snap without diagonal flight across the screen
-    const isLineBreak = lastTop !== null && Math.abs(targetY - lastTop) > 10;
-    if (isLineBreak || lastTop === null) {
-      pill.style.setProperty('transition', 'none', 'important');
-      pill.style.setProperty('transform', `translate3d(${targetX}px, ${targetY}px, 0)`, 'important');
-      pill.style.setProperty('width', `${targetW}px`, 'important');
-      pill.style.setProperty('height', `${targetH}px`, 'important');
-      pill.style.setProperty('opacity', '1', 'important');
-      void pill.offsetWidth; // flush styles
-      pill.style.removeProperty('transition');
-    } else {
-      pill.style.setProperty('transform', `translate3d(${targetX}px, ${targetY}px, 0)`, 'important');
-      pill.style.setProperty('width', `${targetW}px`, 'important');
-      pill.style.setProperty('height', `${targetH}px`, 'important');
-      pill.style.setProperty('opacity', '1', 'important');
-    }
-    lastTop = targetY;
-
-    // Smoothly ensure current word stays visible during long passages
     const inView =
       rect.top >= 20 &&
       rect.bottom <= (window.innerHeight || document.documentElement.clientHeight) - 20;
@@ -431,15 +419,17 @@ if (!window.__larynx) {
       const prev = state.wordSpans[currentIndex];
       if (prev) {
         prev.classList.remove(ACTIVE_CLASS);
+        prev.style.removeProperty('background-color');
         prev.style.removeProperty('color');
+        prev.style.removeProperty('padding');
+        prev.style.removeProperty('margin');
+        prev.style.removeProperty('border-radius');
+        prev.style.removeProperty('box-shadow');
         prev.style.removeProperty('position');
         prev.style.removeProperty('z-index');
       }
     }
     currentIndex = -1;
-    lastTop = null;
-    const pill = document.getElementById(PILL_ID);
-    if (pill && pill.parentNode) pill.parentNode.removeChild(pill);
     if (state.injected.length > 0) {
       unwrap(state.injected);
       state.injected = [];

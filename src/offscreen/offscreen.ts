@@ -215,29 +215,28 @@ function speakUtterance(
     /** Milliseconds to hold the cursor at word `i`. */
     const paceFor = (i: number): number => {
       const word = words[i] || '';
-      // Accurate real-world speech tempo: at 1.0x rate, TTS engines speak at ~155-165 WPM (~365ms base per word)
-      const baseMs = 365 / Math.max(0.2, settings.rate);
+      // Realistic speech tempo: at 1.0x rate, modern TTS voices average ~200-220 WPM (~230ms per word)
+      const baseMs = (230 * adaptiveTempoMultiplier) / Math.max(0.2, settings.rate);
       const cleanLen = word.replace(/[^\p{L}\p{N}]/gu, '').length;
 
-      // Realistic phonetic weighting: short grammatical words take ~160-200ms
+      // Realistic phonetic weighting: short grammatical words take ~130-170ms
       let factor = 1.0;
-      if (cleanLen <= 2) factor = 0.52;
-      else if (cleanLen <= 4) factor = 0.78;
+      if (cleanLen <= 2) factor = 0.55;
+      else if (cleanLen <= 4) factor = 0.80;
       else if (cleanLen <= 7) factor = 1.05;
-      else if (cleanLen <= 10) factor = 1.35;
-      else factor = 1.65;
+      else if (cleanLen <= 10) factor = 1.30;
+      else factor = 1.55;
 
       let punctuationPause = 0;
       if (settings.pauseOnPunctuation) {
         if (/[,;—–]/.test(word)) {
-          punctuationPause = Math.round(140 / settings.rate);
+          punctuationPause = Math.round(35 / settings.rate);
         } else if (/[.!?:]/.test(word)) {
-          punctuationPause = Math.round(260 / settings.rate);
+          punctuationPause = Math.round(70 / settings.rate);
         }
       }
 
-      const calculated = Math.max(MIN_WORD_INTERVAL_MS, Math.round(baseMs * factor) + punctuationPause);
-      return Math.round(calculated * adaptiveTempoMultiplier);
+      return Math.max(MIN_WORD_INTERVAL_MS, Math.round(baseMs * factor) + punctuationPause);
     };
 
     const stop = () => {
@@ -290,25 +289,20 @@ function speakUtterance(
       const i = wordIndexAt(offsets, charIndex);
       if (i < 0 || i >= words.length) return;
 
-      // CRITICAL SYNCHRONIZATION GUARANTEE:
-      // Monotonic progression: Never allow highlight to fall backwards!
+      // Monotonic progression: Never allow highlight to fall backwards
       if (i <= emitted && emitted !== -1) return;
 
-      // Filter out spurious jumps beyond 3 words ahead
-      if (emitted >= 0 && i > emitted + 3) return;
-
-      // Measure acoustic speaking tempo and adapt drift smoothly
+      // Adapt tempo dynamically based on actual voice speed
       const now = Date.now();
       if (lastBoundaryIndex >= 0 && i > lastBoundaryIndex && lastBoundaryTime > 0) {
         const actualDelta = now - lastBoundaryTime;
-        let expectedDelta = 0;
-        for (let k = lastBoundaryIndex; k < i; k++) {
-          expectedDelta += paceFor(k) / adaptiveTempoMultiplier;
-        }
-        if (expectedDelta > 50) {
-          const ratio = actualDelta / expectedDelta;
-          if (ratio >= 0.5 && ratio <= 1.8) {
-            adaptiveTempoMultiplier = adaptiveTempoMultiplier * 0.75 + ratio * 0.25;
+        const wordDiff = i - lastBoundaryIndex;
+        const actualPerWord = actualDelta / wordDiff;
+        if (actualPerWord >= 80 && actualPerWord <= 600) {
+          const expectedPerWord = 230 / Math.max(0.2, settings.rate);
+          const ratio = actualPerWord / expectedPerWord;
+          if (ratio >= 0.4 && ratio <= 2.2) {
+            adaptiveTempoMultiplier = adaptiveTempoMultiplier * 0.7 + ratio * 0.3;
           }
         }
       }
@@ -316,23 +310,19 @@ function speakUtterance(
       lastBoundaryIndex = i;
       lastBoundaryTime = now;
 
+      // Live synchronization: Immediately track the actual spoken word
       emitted = i;
       emit(emitted);
       nextAt = now + paceFor(emitted);
     };
 
-    /** Emits any word the engine never reached, so the tail is never left dark. */
-    const flush = () => {
-      while (emitted < words.length - 1) {
-        emitted++;
-        emit(emitted);
-      }
-    };
-
     utterance.onend = () => {
       stop();
       currentUtterance = null;
-      flush();
+      if (emitted < words.length - 1) {
+        emitted = words.length - 1;
+        emit(emitted);
+      }
       resolve(words.length);
     };
 
