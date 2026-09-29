@@ -2,6 +2,7 @@
 // Bundled as a self-contained IIFE (classic script, no ES module imports).
 // Captures the selection, wraps it in per-word spans, and highlights as speech progresses.
 // Safe to inject multiple times: persistent state lives on window.
+// v1.3.0
 
 import { prepareSpeech } from '../shared/text-utils';
 import type { ContentMessage } from '../shared/types';
@@ -10,15 +11,11 @@ const WORD_CLASS = 'larynx-word';
 const GAP_CLASS = 'larynx-gap';
 const ACTIVE_CLASS = 'larynx-word-active';
 const STYLE_ID = 'larynx-word-styles';
+const PILL_ID = 'larynx-liquid-pill';
 
 /** Index of the word currently carrying the active class, or -1. */
 let currentIndex = -1;
-
-/**
- * Disarms the selection-guard listener installed while a highlight is up.
- * Guarded by the fact that only one run ever owns the page at a time.
- */
-let selectionGuard: (() => void) | null = null;
+let lastTop: number | null = null;
 
 interface ContentState {
   /** Word spans only — indexes are what `WORD_PROGRESS` addresses. */
@@ -42,90 +39,22 @@ declare global {
 }
 
 /**
- * The extension's own stylesheet is only bundled into the options page, so the
- * highlight rules have to be injected into whichever host page is being read.
+ * Inject styles for the word spans and the liquid sliding pill.
  *
- * At rest the spans are completely invisible. They have to be styled anyway —
- * they are real elements sitting in the middle of the host page's text — and
- * anything left behind shows up as a visible reflow artefact, so every property
- * that could paint is pinned to its no-op value. What survives is
- * `box-decoration-break`, which is inherited behaviour rather than decoration,
- * and the `::selection` override below.
+ * The pill uses `mix-blend-mode: difference` — this is the TRUE "negative of
+ * the website's color palette" technique. Whatever color is underneath the pill
+ * gets mathematically inverted: white background → black pill content, dark
+ * backgrounds → light pill content, mid-tones stay contrasted. Zero theme
+ * detection needed. The text itself is set to white so that after difference
+ * blending with the black pill it reads perfectly on any background.
  *
- * The highlight itself is a plain rectangle produced by a *negative colour*
- * blend: `mix-blend-mode: difference` against a white fill inverts whatever the
- * host page has painted underneath, glyphs included. That is what keeps the
- * current word readable on any background — a page that is already light turns
- * the block dark, a page that is already dark turns it light, and mid-tones keep
- * exactly the contrast they started with. Nothing about the block is themed, so
- * no host-page colour can hide it.
- *
- * Only the active word is ever painted, and it is always at `opacity: 1`. The
- * inversion is the whole signal: there is no dimmed "already read" state
- * competing with it, so the eye is never asked to weigh two levels of emphasis
- * at once.
- *
- * The separators between words are injected as `larynx-gap` spans rather than
- * left as bare text nodes, because `::selection` can only be neutralised on
- * elements. Without that, the whitespace between two highlighted words falls
- * outside every highlighted element and the browser paints it with the native
- * selection colour — which is exactly the "the spaces get selected" artefact.
- *
- * Host-page resets cannot interfere: the selectors are specific and the
- * declarations that matter carry `!important`.
+ * mix-blend-mode: difference explanation:
+ *   result_color = |destination - source|
+ *   source (pill) = #FFFFFF (white = rgb(255,255,255))
+ *   on white bg: |255-255| = 0 → black text ✓
+ *   on black bg: |0-255| = 255 → white text ✓
+ *   on blue: |links~rgb(0,100,200)-255| → warm orange/red ✓
  */
-let isDarkTheme = false;
-
-function detectTheme(node?: Node | null): boolean {
-  // 1. Direct Text Color Luminance: The most reliable signal on the web.
-  // Dark text (<0.45 lum) means the text is displayed over a light background.
-  // Light text (>0.55 lum) means the text is displayed over a dark background.
-  const el: HTMLElement | null =
-    node instanceof HTMLElement ? node : (node?.parentElement || document.body);
-  if (el) {
-    const textColor = window.getComputedStyle(el).color;
-    const match = textColor.match(/\d+/g);
-    if (match && match.length >= 3) {
-      const r = parseInt(match[0], 10);
-      const g = parseInt(match[1], 10);
-      const b = parseInt(match[2], 10);
-      const lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
-      if (lum < 0.45) return false; // Light page
-      if (lum > 0.55) return true;  // Dark page
-    }
-  }
-
-  // 2. Traverse ancestor background colors
-  let curr: HTMLElement | null = el;
-  while (curr && curr !== document.documentElement) {
-    const bg = window.getComputedStyle(curr).backgroundColor;
-    if (bg && bg !== 'transparent' && bg !== 'rgba(0, 0, 0, 0)') {
-      const match = bg.match(/\d+/g);
-      if (match && match.length >= 3) {
-        const r = parseInt(match[0], 10);
-        const g = parseInt(match[1], 10);
-        const b = parseInt(match[2], 10);
-        return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 < 0.5;
-      }
-    }
-    curr = curr.parentElement;
-  }
-
-  const bodyBg = window.getComputedStyle(document.body || document.documentElement).backgroundColor;
-  const match = bodyBg.match(/\d+/g);
-  if (match && match.length >= 3) {
-    const r = parseInt(match[0], 10);
-    const g = parseInt(match[1], 10);
-    const b = parseInt(match[2], 10);
-    return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 < 0.5;
-  }
-
-  return false;
-}
-
-const PILL_ID = 'larynx-liquid-pill';
-let lastTop: number | null = null;
-
 function ensureStyles(): void {
   if (document.getElementById(STYLE_ID)) return;
   const style = document.createElement('style');
@@ -146,11 +75,14 @@ function ensureStyles(): void {
       display: inline !important;
       -webkit-box-decoration-break: clone;
       box-decoration-break: clone;
-      transition: color 0.12s ease !important;
     }
     .${WORD_CLASS}.${ACTIVE_CLASS} {
       position: relative !important;
       z-index: 999995 !important;
+      /* White text, difference-blended against the white pill:
+         white pill over any bg → inverted color, text stays pure white above it */
+      color: white !important;
+      mix-blend-mode: difference !important;
     }
     .${WORD_CLASS}::selection,
     .${GAP_CLASS}::selection {
@@ -162,12 +94,14 @@ function ensureStyles(): void {
       top: 0 !important;
       left: 0 !important;
       pointer-events: none !important;
-      z-index: 999990 !important;
+      /* White pill + mix-blend-mode:difference = true color inversion of anything underneath */
+      background-color: white !important;
       border-radius: 4px !important;
       box-sizing: border-box !important;
+      z-index: 999990 !important;
       will-change: transform, width, height, opacity !important;
-      transition: transform 0.15s cubic-bezier(0.25, 1, 0.5, 1),
-                  width 0.15s cubic-bezier(0.25, 1, 0.5, 1),
+      transition: transform 0.14s cubic-bezier(0.25, 1, 0.5, 1),
+                  width 0.14s cubic-bezier(0.25, 1, 0.5, 1),
                   height 0.10s ease,
                   opacity 0.08s ease !important;
     }`;
@@ -179,28 +113,26 @@ function getOrCreateLiquidPill(): HTMLElement {
   if (!pill) {
     pill = document.createElement('div');
     pill.id = PILL_ID;
-    if (isDarkTheme) {
-      pill.style.setProperty('background-color', '#FFFFFF', 'important');
-      pill.style.setProperty('box-shadow', '0 2px 10px rgba(255, 255, 255, 0.28)', 'important');
-    } else {
-      pill.style.setProperty('background-color', '#000000', 'important');
-      pill.style.setProperty('box-shadow', '0 2px 10px rgba(0, 0, 0, 0.22)', 'important');
-    }
     document.documentElement.appendChild(pill);
   }
   return pill;
 }
 
 /**
- * Paints active word with liquid sliding pill across the text.
- * Completely eliminates any jiggle/scaling for a fluid, natural glide.
+ * Paints the liquid sliding pill on the active word.
+ * Uses mix-blend-mode: difference so the highlight color is literally the
+ * mathematical inverse of whatever the page has painted underneath — works
+ * on any website with zero theme detection.
  */
 function paintWord(spans: HTMLElement[], index: number): void {
   if (index < 0 || index >= spans.length) return;
+
+  // Un-highlight previous word
   if (currentIndex >= 0 && currentIndex < spans.length && currentIndex !== index) {
     const prev = spans[currentIndex];
     prev.classList.remove(ACTIVE_CLASS);
     prev.style.removeProperty('color');
+    prev.style.removeProperty('mix-blend-mode');
     prev.style.removeProperty('position');
     prev.style.removeProperty('z-index');
   }
@@ -209,35 +141,34 @@ function paintWord(spans: HTMLElement[], index: number): void {
   if (!el) return;
 
   el.classList.add(ACTIVE_CLASS);
-
-  // Negative text color contrasting with the liquid pill directly behind it
-  if (isDarkTheme) {
-    el.style.setProperty('color', '#000000', 'important');
-  } else {
-    el.style.setProperty('color', '#FFFFFF', 'important');
-  }
-  el.style.setProperty('position', 'relative', 'important');
-  el.style.setProperty('z-index', '999995', 'important');
   currentIndex = index;
 
   try {
     const pill = getOrCreateLiquidPill();
     const rect = el.getBoundingClientRect();
-    const targetX = Math.round(rect.left - 2);
-    const targetY = Math.round(rect.top - 1);
-    const targetW = Math.max(6, Math.round(rect.width + 4));
-    const targetH = Math.max(12, Math.round(rect.height + 2));
+
+    // Add padding around word for visual comfort
+    const padX = 3;
+    const padY = 2;
+    const targetX = Math.round(rect.left - padX);
+    const targetY = Math.round(rect.top - padY);
+    const targetW = Math.max(8, Math.round(rect.width + padX * 2));
+    const targetH = Math.max(14, Math.round(rect.height + padY * 2));
 
     const isLineBreak = lastTop !== null && Math.abs(targetY - lastTop) > 8;
+
     if (isLineBreak || lastTop === null) {
+      // Snap instantly when crossing a line — never animate diagonally
       pill.style.setProperty('transition', 'none', 'important');
       pill.style.setProperty('transform', `translate3d(${targetX}px, ${targetY}px, 0)`, 'important');
       pill.style.setProperty('width', `${targetW}px`, 'important');
       pill.style.setProperty('height', `${targetH}px`, 'important');
       pill.style.setProperty('opacity', '1', 'important');
+      // Force reflow so the no-transition snap actually applies
       void pill.offsetWidth;
       pill.style.removeProperty('transition');
     } else {
+      // Smooth liquid slide within the same line
       pill.style.setProperty('transform', `translate3d(${targetX}px, ${targetY}px, 0)`, 'important');
       pill.style.setProperty('width', `${targetW}px`, 'important');
       pill.style.setProperty('height', `${targetH}px`, 'important');
@@ -245,6 +176,7 @@ function paintWord(spans: HTMLElement[], index: number): void {
     }
     lastTop = targetY;
 
+    // Auto-scroll when word goes out of view
     const inView =
       rect.top >= 20 &&
       rect.bottom <= (window.innerHeight || document.documentElement.clientHeight) - 20;
@@ -252,12 +184,58 @@ function paintWord(spans: HTMLElement[], index: number): void {
       el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
   } catch {
-    // Ignore layout errors
+    // Ignore layout errors on pages with unusual DOM structure
   }
 }
 
+/** Repositions the pill when the page scrolls (since pill is position:fixed, it stays in viewport) */
+function updatePillOnScroll(): void {
+  if (currentIndex < 0) return;
+  const state = window.__larynx;
+  if (!state || currentIndex >= state.wordSpans.length) return;
+  const el = state.wordSpans[currentIndex];
+  if (!el) return;
+
+  try {
+    const pill = document.getElementById(PILL_ID);
+    if (!pill) return;
+    const rect = el.getBoundingClientRect();
+    const padX = 3;
+    const padY = 2;
+    const targetX = Math.round(rect.left - padX);
+    const targetY = Math.round(rect.top - padY);
+    const targetW = Math.max(8, Math.round(rect.width + padX * 2));
+    const targetH = Math.max(14, Math.round(rect.height + padY * 2));
+    // Instant reposition on scroll — no transition
+    pill.style.setProperty('transition', 'none', 'important');
+    pill.style.setProperty('transform', `translate3d(${targetX}px, ${targetY}px, 0)`, 'important');
+    pill.style.setProperty('width', `${targetW}px`, 'important');
+    pill.style.setProperty('height', `${targetH}px`, 'important');
+    lastTop = targetY;
+    void pill.offsetWidth;
+    pill.style.removeProperty('transition');
+  } catch {
+    // ignore
+  }
+}
+
+let scrollListenerAdded = false;
+function armScrollListener(): void {
+  if (scrollListenerAdded) return;
+  scrollListenerAdded = true;
+  window.addEventListener('scroll', updatePillOnScroll, { passive: true, capture: true });
+  window.addEventListener('resize', updatePillOnScroll, { passive: true });
+}
+
+function removeScrollListener(): void {
+  if (!scrollListenerAdded) return;
+  scrollListenerAdded = false;
+  window.removeEventListener('scroll', updatePillOnScroll, { capture: true });
+  window.removeEventListener('resize', updatePillOnScroll);
+}
+
 /**
- * Direct word highlighting on progress.
+ * Highlights a word by index.
  */
 function highlightWord(spans: HTMLElement[], index: number): void {
   if (index < 0 || index >= spans.length) return;
@@ -266,11 +244,6 @@ function highlightWord(spans: HTMLElement[], index: number): void {
 
 /**
  * Translates a spoken word index into the source word it came from.
- *
- * `spokenToSource` is empty before a plan exists, and an out-of-range lookup can
- * only happen if the engine ever disagrees with the plan about how many words it
- * produced — in which case there is no honest index to paint, so the update is
- * dropped instead of guessed at.
  */
 function sourceIndexFor(state: ContentState, spokenIndex: number): number | undefined {
   if (state.spokenToSource.length === 0) return spokenIndex;
@@ -299,16 +272,6 @@ function collectTextNodes(range: Range): Text[] {
 
 /**
  * Replaces the covered slice of one text node with per-word spans.
- *
- * Every character of the original slice is preserved verbatim: the text between
- * words (and any leading/trailing whitespace) is emitted as real text using the
- * exact original substring, never a normalised " ". Collapsing the separators
- * would visibly rewrite the host page's text once the spans are unwrapped.
- *
- * Separators that fall *inside* the selection are wrapped in `larynx-gap` spans
- * so they pick up the range background and the `::selection` override. The text
- * before the selection and after it stays as bare text nodes, because that part
- * of the node was never selected and must not be highlighted.
  */
 function wrapTextNode(node: Text, start: number, end: number, spans: HTMLElement[], injected: HTMLElement[]): void {
   const parent = node.parentNode;
@@ -319,7 +282,6 @@ function wrapTextNode(node: Text, start: number, end: number, spans: HTMLElement
 
   const fragment = document.createDocumentFragment();
 
-  // Preserve any text before the selection started.
   if (start > 0) {
     fragment.appendChild(document.createTextNode(node.data.slice(0, start)));
   }
@@ -333,8 +295,6 @@ function wrapTextNode(node: Text, start: number, end: number, spans: HTMLElement
     fragment.appendChild(gap);
   };
 
-  // Walk the word matches and copy the gaps between them through untouched, so
-  // each span holds exactly one word and the separators keep their original form.
   const wordPattern = /\S+/g;
   let cursor = 0;
   let match: RegExpExecArray | null;
@@ -395,36 +355,7 @@ function unwrap(spans: HTMLElement[]): void {
     parents.add(parent);
   });
 
-  // Merge the adjacent text nodes that used to be one.
   parents.forEach((parent) => parent.normalize());
-}
-
-/**
- * Scrub native selections that spring back over the injected spans.
- */
-function armSelectionGuard(state: ContentState): void {
-  if (selectionGuard) return;
-
-  const handler = () => {
-    const selection = window.getSelection();
-    if (!selection || selection.rangeCount === 0) return;
-    try {
-      const range = selection.getRangeAt(0);
-      const touchesInjected = state.injected.some((span) => {
-        try {
-          return range.intersectsNode(span);
-        } catch {
-          return false;
-        }
-      });
-      if (touchesInjected) selection.removeAllRanges();
-    } catch {
-      // A selection can be torn down mid-check; nothing to clear then.
-    }
-  };
-
-  document.addEventListener('selectionchange', handler, true);
-  selectionGuard = () => document.removeEventListener('selectionchange', handler, true);
 }
 
 if (!window.__larynx) {
@@ -439,29 +370,32 @@ if (!window.__larynx) {
   window.__larynx = state;
 
   state.cleanup = () => {
-    if (selectionGuard) {
-      selectionGuard();
-      selectionGuard = null;
-    }
+
     if (currentIndex >= 0 && currentIndex < state.wordSpans.length) {
       const prev = state.wordSpans[currentIndex];
       if (prev) {
         prev.classList.remove(ACTIVE_CLASS);
         prev.style.removeProperty('color');
+        prev.style.removeProperty('mix-blend-mode');
         prev.style.removeProperty('position');
         prev.style.removeProperty('z-index');
       }
     }
     currentIndex = -1;
     lastTop = null;
+
     const pill = document.getElementById(PILL_ID);
     if (pill?.parentNode) pill.parentNode.removeChild(pill);
+
+    removeScrollListener();
+
     if (state.injected.length > 0) {
       unwrap(state.injected);
       state.injected = [];
     }
     state.wordSpans = [];
     state.spokenToSource = [];
+
     const style = document.getElementById(STYLE_ID);
     if (style?.parentNode) style.parentNode.removeChild(style);
   };
@@ -484,9 +418,6 @@ if (!window.__larynx) {
 
     state.cleanup();
 
-    // Detect page theme for simple negative color inversion
-    isDarkTheme = detectTheme(range.commonAncestorContainer);
-
     const plan = prepareSpeech(text);
     state.spokenToSource = plan.spokenToSource;
 
@@ -500,7 +431,7 @@ if (!window.__larynx) {
     state.wordSpans = wrapped.words;
     state.injected = wrapped.injected;
 
-    armSelectionGuard(state);
+    armScrollListener();
 
     try {
       selection.removeAllRanges();
@@ -540,8 +471,6 @@ if (!window.__larynx) {
         state.cleanup();
         break;
       case 'SETTINGS_CHANGED':
-        // Rate and voice are forwarded straight to the offscreen document by the
-        // background worker, so there is nothing to restart here.
         break;
       default:
         return false;

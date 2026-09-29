@@ -1,4 +1,5 @@
 // Offscreen Document — Web Speech API TTS engine with word-level progress
+// v1.3.0
 //
 // Owns `window.speechSynthesis` for the whole extension. Emits a global word index
 // (not per-sentence) so the content script can highlight against its flat list of
@@ -201,6 +202,10 @@ function speakUtterance(
     let emitted = -1;
     let nextAt = 0;
     let handle: ReturnType<typeof setInterval> | null = null;
+    // Track time between boundary events to calibrate fallback pacing
+    let lastBoundaryTime = 0;
+    let lastBoundaryWordIdx = -1;
+    let measuredMsPerWord = 0; // 0 = not yet calibrated
 
     const emit = (local: number) => {
       if (local < 0 || local >= words.length) return;
@@ -213,28 +218,31 @@ function speakUtterance(
     /** Milliseconds to hold the cursor at word `i` when using fallback pacing. */
     const paceFor = (i: number): number => {
       const word = words[i] || '';
-      // Natural human reading rate: ~145 WPM (~410ms base per word at 1.0x rate)
-      const baseMs = 410 / Math.max(0.2, settings.rate);
+      // Use measured real voice speed if we have calibration data, else use 145 WPM estimate
+      // Real TTS voices typically run 120-180 WPM depending on voice and rate setting
+      const baseMsPerWord = measuredMsPerWord > 0
+        ? measuredMsPerWord
+        : (380 / Math.max(0.2, settings.rate));
       const cleanLen = word.replace(/[^\p{L}\p{N}]/gu, '').length;
 
-      // Realistic human syllable length weighting
+      // Syllable-length factor relative to average English word (~5 chars)
       let factor = 1.0;
-      if (cleanLen <= 2) factor = 0.65;
-      else if (cleanLen <= 4) factor = 0.88;
-      else if (cleanLen <= 7) factor = 1.10;
-      else if (cleanLen <= 10) factor = 1.35;
-      else factor = 1.60;
+      if (cleanLen <= 2) factor = 0.60;
+      else if (cleanLen <= 4) factor = 0.82;
+      else if (cleanLen <= 6) factor = 1.00;
+      else if (cleanLen <= 9) factor = 1.20;
+      else factor = 1.45;
 
       let punctuationPause = 0;
       if (settings.pauseOnPunctuation) {
         if (/[,;—–]/.test(word)) {
-          punctuationPause = Math.round(140 / settings.rate);
+          punctuationPause = Math.round(120 / settings.rate);
         } else if (/[.!?:]/.test(word)) {
-          punctuationPause = Math.round(260 / settings.rate);
+          punctuationPause = Math.round(220 / settings.rate);
         }
       }
 
-      return Math.max(MIN_WORD_INTERVAL_MS, Math.round(baseMs * factor) + punctuationPause);
+      return Math.max(MIN_WORD_INTERVAL_MS, Math.round(baseMsPerWord * factor) + punctuationPause);
     };
 
     const stop = () => {
@@ -248,8 +256,8 @@ function speakUtterance(
     const pump = () => {
       if (isPaused || stopRequested) return;
 
-      // If the engine itself is firing real boundaries, the engine owns the cursor 100%!
-      // Never allow a blind timer to race or double-emit ahead of speech audio!
+      // If the engine is firing real boundary events, it owns the cursor.
+      // The pump only runs as a fallback for voices that don't fire boundaries.
       if (hasBoundarySupport) return;
 
       if (emitted >= words.length - 1) {
@@ -266,16 +274,21 @@ function speakUtterance(
 
     utterance.onstart = () => {
       sendRunStamped({ type: 'SPEAKING_STARTED', payload: { sentenceIndex } });
-      emitted = 0;
-      emit(0);
+      // Don't emit word 0 immediately — wait for onboundary or hold for startup latency
+      // This prevents the highlight from jumping ahead before audio begins
+      emitted = -1;
       hasBoundarySupport = false;
+      lastBoundaryTime = 0;
+      lastBoundaryWordIdx = -1;
+      measuredMsPerWord = 0;
 
-      // When speech starts, audio takes ~220ms to physically begin producing sound.
-      // Hold word 0 for startup latency plus word 0 duration before fallback timer can step.
-      nextAt = Date.now() + 220 + paceFor(0);
+      // Audio startup latency before first word is heard: ~150ms for local voices,
+      // ~300ms+ for network/neural voices. Start at word 0 after startup buffer.
+      nextAt = Date.now() + 160;
       handle = setInterval(pump, PUMP_TICK_MS);
       activePump = {
         rearm: () => {
+          // After resume, hold current position briefly before stepping
           nextAt = Date.now() + RESUME_DELAY_MS;
         },
       };
@@ -283,7 +296,7 @@ function speakUtterance(
 
     utterance.onboundary = (event) => {
       const boundaryEvent = event as SpeechSynthesisEvent;
-      // Filter out non-word boundaries (Chrome fires 'sentence' with charIndex: 0)
+      // Filter out sentence boundaries (Chrome fires 'sentence' with charIndex: 0)
       if (boundaryEvent.name && boundaryEvent.name !== 'word') return;
 
       const charIndex = boundaryEvent.charIndex;
@@ -292,11 +305,47 @@ function speakUtterance(
       const i = wordIndexAt(offsets, charIndex);
       if (i < 0 || i >= words.length) return;
 
-      // The engine supports real boundary events! Lock highlight 100% to vocal audio!
-      hasBoundarySupport = true;
+      const now = Date.now();
 
-      // Real acoustic event from the voice engine: advance strictly on boundary
+      // Real boundary support confirmed — disable fallback pump
+      if (!hasBoundarySupport) {
+        hasBoundarySupport = true;
+      }
+
+      // Calibrate measured pace from real boundary deltas
+      if (lastBoundaryTime > 0 && lastBoundaryWordIdx >= 0 && i > lastBoundaryWordIdx) {
+        const wordSpan = i - lastBoundaryWordIdx;
+        const timeSpan = now - lastBoundaryTime;
+        if (timeSpan > 30 && timeSpan < 2000) {
+          const measured = timeSpan / wordSpan;
+          // Smooth exponential moving average
+          measuredMsPerWord = measuredMsPerWord > 0
+            ? measuredMsPerWord * 0.6 + measured * 0.4
+            : measured;
+        }
+      }
+      lastBoundaryTime = now;
+      lastBoundaryWordIdx = i;
+
+      // Strictly advance monotonically: never go backwards
       if (i > emitted) {
+        // Emit each word sequentially — never skip/jump multiple words at once.
+        // This keeps the highlight from teleporting when boundary events are sparse.
+        const wordsBetween = i - Math.max(0, emitted + 1);
+        if (wordsBetween > 1 && measuredMsPerWord > 0) {
+          // Spread missed words over time using measured pace
+          const delayPerWord = Math.max(20, measuredMsPerWord * 0.85);
+          for (let w = Math.max(0, emitted + 1); w < i; w++) {
+            const delay = (w - Math.max(0, emitted + 1)) * delayPerWord;
+            const capturedW = w;
+            setTimeout(() => {
+              if (!stopRequested && !isPaused) emit(capturedW);
+            }, delay);
+          }
+        } else if (emitted < 0) {
+          // First boundary: emit word 0 immediately
+          emit(0);
+        }
         emitted = i;
         emit(emitted);
       }

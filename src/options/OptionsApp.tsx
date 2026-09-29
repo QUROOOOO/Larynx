@@ -26,7 +26,7 @@ import { getSettings, setSettings, onSettingsChange, TTSSettings } from '../shar
 import { VoiceInfo, DEFAULT_SETTINGS } from '../shared/types';
 import { splitIntoSentences } from '../shared/text-utils';
 
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 const COMMAND_NAME = 'speak-selection';
 const RECORDING_TIMEOUT_MS = 5000;
 const SHORTCUT_UPDATE_TIMEOUT_MS = 2500;
